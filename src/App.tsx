@@ -240,23 +240,39 @@ interface Track {
   id: string;
   name: string;
   type: "transform" | "ripple" | "cursor" | "keystroke";
-  keyframes: { id: string; time: number }[];
+  keyframes: Keyframe[];
 }
+
+interface Keyframe {
+  id: string;
+  time: number;
+  [key: string]: unknown;
+}
+
+type InspectorTab = "properties" | "settings";
 
 function EditorScreen({ onBack }: { onBack: () => void }) {
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [duration] = useState(30); // placeholder duration
+  const [duration] = useState(30);
+  const [selectedKeyframe, setSelectedKeyframe] = useState<{
+    trackType: string;
+    keyframe: Keyframe;
+  } | null>(null);
   const [tracks] = useState<Track[]>([
     { id: "t1", name: "Transform", type: "transform", keyframes: [
-      { id: "k1", time: 2 }, { id: "k2", time: 8 }, { id: "k3", time: 15 },
+      { id: "k1", time: 2, zoom: 2.5, centerX: 0.3, centerY: 0.4, easing: "spring" },
+      { id: "k2", time: 8, zoom: 1.8, centerX: 0.6, centerY: 0.5, easing: "easeInOut" },
+      { id: "k3", time: 15, zoom: 1.0, centerX: 0.5, centerY: 0.5, easing: "easeOut" },
     ]},
     { id: "t2", name: "Ripple", type: "ripple", keyframes: [
-      { id: "k4", time: 3 }, { id: "k5", time: 12 },
+      { id: "k4", time: 3, intensity: 0.8, rippleDuration: 0.4, color: "leftClick" },
+      { id: "k5", time: 12, intensity: 0.6, rippleDuration: 0.3, color: "rightClick" },
     ]},
     { id: "t3", name: "Cursor", type: "cursor", keyframes: [] },
     { id: "t4", name: "Keystroke", type: "keystroke", keyframes: [
-      { id: "k6", time: 5 }, { id: "k7", time: 20 },
+      { id: "k6", time: 5, text: "Cmd+S", displayDuration: 1.5 },
+      { id: "k7", time: 20, text: "Cmd+Z", displayDuration: 1.5 },
     ]},
   ]);
 
@@ -287,6 +303,11 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     };
   }, [isPlaying, duration]);
 
+  const handleKeyframeSelect = (trackType: string, kf: Keyframe) => {
+    setSelectedKeyframe({ trackType, keyframe: kf });
+    setPlayheadTime(kf.time);
+  };
+
   return (
     <div className="editor-screen">
       <div className="editor-header">
@@ -309,11 +330,9 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
       </div>
 
       <div className="editor-body">
-        <div className="preview-area">
-          <div className="preview-placeholder">
-            <span>Video Preview</span>
-            <span className="preview-time">{formatTimecode(playheadTime)}</span>
-          </div>
+        <div className="editor-main">
+          <VideoPreview playheadTime={playheadTime} duration={duration} />
+          <InspectorPanel selection={selectedKeyframe} />
         </div>
 
         <div className="timeline-panel">
@@ -329,10 +348,233 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
                 track={track}
                 duration={duration}
                 playheadTime={playheadTime}
+                selectedId={selectedKeyframe?.keyframe.id}
+                onSelectKeyframe={(kf) => handleKeyframeSelect(track.type, kf)}
               />
             ))}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Video Preview
+// =============================================================================
+
+function VideoPreview({
+  playheadTime,
+  duration,
+}: {
+  playheadTime: number;
+  duration: number;
+}) {
+  const progress = duration > 0 ? playheadTime / duration : 0;
+
+  return (
+    <div className="preview-area">
+      <div className="video-preview">
+        <div className="preview-canvas">
+          {/* Simulated zoom/pan viewport indicator */}
+          <div
+            className="viewport-indicator"
+            style={{
+              width: `${60 + 40 * (1 - progress)}%`,
+              height: `${60 + 40 * (1 - progress)}%`,
+              left: `${20 * progress}%`,
+              top: `${15 * progress}%`,
+            }}
+          />
+          <div className="preview-cursor" style={{
+            left: `${30 + 40 * progress}%`,
+            top: `${40 + 20 * Math.sin(progress * Math.PI * 2)}%`,
+          }} />
+        </div>
+        <div className="preview-overlay">
+          <span className="preview-time">{formatTimecode(playheadTime)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Inspector Panel
+// =============================================================================
+
+function InspectorPanel({
+  selection,
+}: {
+  selection: { trackType: string; keyframe: Keyframe } | null;
+}) {
+  const [tab, setTab] = useState<InspectorTab>("properties");
+
+  if (!selection) {
+    return (
+      <div className="inspector-panel">
+        <div className="inspector-empty">
+          <span className="inspector-empty-icon">◇</span>
+          <span>Select a keyframe to inspect</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="inspector-panel">
+      <div className="inspector-tabs">
+        <button
+          className={`inspector-tab ${tab === "properties" ? "active" : ""}`}
+          onClick={() => setTab("properties")}
+        >
+          Properties
+        </button>
+        <button
+          className={`inspector-tab ${tab === "settings" ? "active" : ""}`}
+          onClick={() => setTab("settings")}
+        >
+          Settings
+        </button>
+      </div>
+
+      <div className="inspector-body">
+        {tab === "properties" ? (
+          <KeyframeProperties
+            trackType={selection.trackType}
+            keyframe={selection.keyframe}
+          />
+        ) : (
+          <RenderSettingsPanel />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KeyframeProperties({
+  trackType,
+  keyframe,
+}: {
+  trackType: string;
+  keyframe: Keyframe;
+}) {
+  const color = TRACK_COLORS[trackType] || "#888";
+
+  return (
+    <div className="kf-properties">
+      <div className="kf-header">
+        <span className="kf-badge" style={{ background: color }}>
+          {trackType}
+        </span>
+        <span className="kf-time">@ {formatTimecode(keyframe.time)}</span>
+      </div>
+
+      {trackType === "transform" && (
+        <>
+          <PropertyRow label="Zoom" value={`${keyframe.zoom}x`} />
+          <PropertyRow label="Center X" value={String(keyframe.centerX)} />
+          <PropertyRow label="Center Y" value={String(keyframe.centerY)} />
+          <PropertyRow label="Easing" value={String(keyframe.easing)} />
+        </>
+      )}
+
+      {trackType === "ripple" && (
+        <>
+          <PropertyRow label="Intensity" value={String(keyframe.intensity)} />
+          <PropertyRow label="Duration" value={`${keyframe.rippleDuration}s`} />
+          <PropertyRow label="Color" value={String(keyframe.color)} />
+        </>
+      )}
+
+      {trackType === "keystroke" && (
+        <>
+          <PropertyRow label="Text" value={String(keyframe.text)} />
+          <PropertyRow label="Duration" value={`${keyframe.displayDuration}s`} />
+        </>
+      )}
+
+      {trackType === "cursor" && (
+        <div className="kf-empty-note">No editable properties</div>
+      )}
+
+      <div className="easing-section">
+        <label className="section-label">Easing Curve</label>
+        <div className="easing-presets">
+          {["linear", "easeIn", "easeOut", "easeInOut", "spring"].map(e => (
+            <button
+              key={e}
+              className={`easing-btn ${keyframe.easing === e ? "active" : ""}`}
+            >
+              {e}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PropertyRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="property-row">
+      <span className="property-label">{label}</span>
+      <input className="property-input" value={value} readOnly />
+    </div>
+  );
+}
+
+function RenderSettingsPanel() {
+  return (
+    <div className="render-settings">
+      <label className="section-label">Output</label>
+      <div className="property-row">
+        <span className="property-label">Resolution</span>
+        <select className="property-select">
+          <option>Original</option>
+          <option>4K (3840x2160)</option>
+          <option>1440p</option>
+          <option>1080p</option>
+          <option>720p</option>
+        </select>
+      </div>
+      <div className="property-row">
+        <span className="property-label">Codec</span>
+        <select className="property-select">
+          <option>H.265 (HEVC)</option>
+          <option>H.264</option>
+        </select>
+      </div>
+      <div className="property-row">
+        <span className="property-label">Quality</span>
+        <select className="property-select">
+          <option>High</option>
+          <option>Medium</option>
+          <option>Low</option>
+          <option>Original</option>
+        </select>
+      </div>
+      <div className="property-row">
+        <span className="property-label">Frame Rate</span>
+        <select className="property-select">
+          <option>Original</option>
+          <option>60 fps</option>
+          <option>30 fps</option>
+        </select>
+      </div>
+
+      <label className="section-label">Window Mode</label>
+      <div className="property-row">
+        <span className="property-label">Background</span>
+        <input type="checkbox" />
+      </div>
+      <div className="property-row">
+        <span className="property-label">Corner Radius</span>
+        <input className="property-input" value="22" readOnly />
+      </div>
+      <div className="property-row">
+        <span className="property-label">Shadow</span>
+        <input className="property-input" value="0.7" readOnly />
       </div>
     </div>
   );
@@ -395,10 +637,14 @@ function TimelineTrack({
   track,
   duration,
   playheadTime,
+  selectedId,
+  onSelectKeyframe,
 }: {
   track: Track;
   duration: number;
   playheadTime: number;
+  selectedId?: string;
+  onSelectKeyframe?: (kf: Keyframe) => void;
 }) {
   const color = TRACK_COLORS[track.type] || "#888";
 
@@ -411,12 +657,13 @@ function TimelineTrack({
         {track.keyframes.map(kf => (
           <div
             key={kf.id}
-            className="keyframe-marker"
+            className={`keyframe-marker ${kf.id === selectedId ? "selected" : ""}`}
             style={{
               left: `${(kf.time / duration) * 100}%`,
               backgroundColor: color,
             }}
             title={`${track.name} @ ${formatTimecode(kf.time)}`}
+            onClick={() => onSelectKeyframe?.(kf)}
           />
         ))}
         <div

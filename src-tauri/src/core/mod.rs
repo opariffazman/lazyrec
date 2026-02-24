@@ -8,5 +8,6 @@ pub mod input;
 pub mod keyframe;
 pub mod permissions;
 pub mod project;
+pub mod recorder;
 pub mod timeline;
 pub mod track;
