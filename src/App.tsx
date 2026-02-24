@@ -114,6 +114,14 @@ interface RecordingStatusData {
   frameCount: number;
 }
 
+interface CaptureSourceInfo {
+  id: string;
+  name: string;
+  sourceType: "display" | "window";
+  width: number;
+  height: number;
+}
+
 function RecordingScreen({
   onBack,
   onRecordingComplete,
@@ -126,7 +134,23 @@ function RecordingScreen({
   const [frameCount, setFrameCount] = useState(0);
   const [countdown, setCountdown] = useState(3);
   const [error, setError] = useState<string | null>(null);
+  const [sources, setSources] = useState<CaptureSourceInfo[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const pollRef = useRef<number | null>(null);
+
+  // Load capture sources on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const srcs = await invoke<CaptureSourceInfo[]>("list_capture_sources");
+        setSources(srcs);
+        if (srcs.length > 0) setSelectedSourceId(srcs[0].id);
+      } catch {
+        // Fallback — sources remain empty, backend will use default
+      }
+    })();
+  }, []);
 
   // Poll backend status while recording/paused
   useEffect(() => {
@@ -163,6 +187,16 @@ function RecordingScreen({
         clearInterval(interval);
         try {
           const { invoke } = await import("@tauri-apps/api/core");
+          // Set capture target based on selected source
+          if (selectedSourceId) {
+            const source = sources.find(s => s.id === selectedSourceId);
+            if (source) {
+              const target = source.sourceType === "window"
+                ? { type: "window" as const, title: source.name, windowId: 0 }
+                : { type: "display" as const, displayId: 0 };
+              await invoke("set_capture_target", { target });
+            }
+          }
           await invoke("start_recording");
           setState("recording");
           setElapsed(0);
@@ -175,7 +209,7 @@ function RecordingScreen({
         setCountdown(count);
       }
     }, 1000);
-  }, []);
+  }, [sources, selectedSourceId]);
 
   const togglePause = async () => {
     try {
@@ -236,9 +270,17 @@ function RecordingScreen({
           <div className="recording-ready">
             <div className="source-selector">
               <label>Capture Source</label>
-              <select className="source-dropdown">
-                <option>Entire Screen</option>
-                <option>Window...</option>
+              <select
+                className="source-dropdown"
+                value={selectedSourceId}
+                onChange={(e) => setSelectedSourceId(e.target.value)}
+              >
+                {sources.length === 0 && <option value="">Entire Screen</option>}
+                {sources.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.width}x{s.height})
+                  </option>
+                ))}
               </select>
             </div>
             <button className="record-btn" onClick={startCountdown}>
@@ -904,57 +946,143 @@ function PropertyRow({
   );
 }
 
+interface RenderSettingsData {
+  outputResolution: { type: string; width?: number; height?: number };
+  outputFrameRate: { type: string; fps?: number };
+  codec: string;
+  quality: string;
+  backgroundEnabled: boolean;
+  cornerRadius: number;
+  shadowRadius: number;
+  shadowOpacity: number;
+  padding: number;
+  windowInset: number;
+}
+
+const RESOLUTION_OPTIONS = [
+  { label: "Original", value: "original" },
+  { label: "4K (3840x2160)", value: "uhd4k" },
+  { label: "1440p", value: "qhd1440" },
+  { label: "1080p", value: "fhd1080" },
+  { label: "720p", value: "hd720" },
+];
+
+const CODEC_OPTIONS = [
+  { label: "H.265 (HEVC)", value: "h265" },
+  { label: "H.264", value: "h264" },
+];
+
+const QUALITY_OPTIONS = [
+  { label: "High", value: "high" },
+  { label: "Medium", value: "medium" },
+  { label: "Low", value: "low" },
+  { label: "Original", value: "original" },
+];
+
+const FRAMERATE_OPTIONS = [
+  { label: "Original", value: "original" },
+  { label: "60 fps", value: "60" },
+  { label: "30 fps", value: "30" },
+];
+
 function RenderSettingsPanel() {
+  const [settings, setSettings] = useState<RenderSettingsData | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const s = await invoke<RenderSettingsData>("get_render_settings");
+        setSettings(s);
+      } catch {
+        // No project loaded
+      }
+    })();
+  }, []);
+
+  const saveSettings = async (updated: RenderSettingsData) => {
+    setSettings(updated);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("update_render_settings", { settings: updated });
+    } catch (err) {
+      console.error("Failed to save render settings:", err);
+    }
+  };
+
+  if (!settings) {
+    return (
+      <div className="render-settings">
+        <div className="kf-empty-note">No project loaded</div>
+      </div>
+    );
+  }
+
+  const resolutionValue = settings.outputResolution.type;
+  const frameRateValue = settings.outputFrameRate.type === "fixed"
+    ? String(settings.outputFrameRate.fps ?? 60)
+    : "original";
+
   return (
     <div className="render-settings">
       <label className="section-label">Output</label>
       <div className="property-row">
         <span className="property-label">Resolution</span>
-        <select className="property-select">
-          <option>Original</option>
-          <option>4K (3840x2160)</option>
-          <option>1440p</option>
-          <option>1080p</option>
-          <option>720p</option>
+        <select className="property-select" value={resolutionValue}
+          onChange={(e) => saveSettings({
+            ...settings,
+            outputResolution: { type: e.target.value },
+          })}>
+          {RESOLUTION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
       <div className="property-row">
         <span className="property-label">Codec</span>
-        <select className="property-select">
-          <option>H.265 (HEVC)</option>
-          <option>H.264</option>
+        <select className="property-select" value={settings.codec}
+          onChange={(e) => saveSettings({ ...settings, codec: e.target.value })}>
+          {CODEC_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
       <div className="property-row">
         <span className="property-label">Quality</span>
-        <select className="property-select">
-          <option>High</option>
-          <option>Medium</option>
-          <option>Low</option>
-          <option>Original</option>
+        <select className="property-select" value={settings.quality}
+          onChange={(e) => saveSettings({ ...settings, quality: e.target.value })}>
+          {QUALITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
       <div className="property-row">
         <span className="property-label">Frame Rate</span>
-        <select className="property-select">
-          <option>Original</option>
-          <option>60 fps</option>
-          <option>30 fps</option>
+        <select className="property-select" value={frameRateValue}
+          onChange={(e) => {
+            const v = e.target.value;
+            saveSettings({
+              ...settings,
+              outputFrameRate: v === "original"
+                ? { type: "original" }
+                : { type: "fixed", fps: parseInt(v) },
+            });
+          }}>
+          {FRAMERATE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
 
       <label className="section-label">Window Mode</label>
       <div className="property-row">
         <span className="property-label">Background</span>
-        <input type="checkbox" />
+        <input type="checkbox" checked={settings.backgroundEnabled}
+          onChange={(e) => saveSettings({ ...settings, backgroundEnabled: e.target.checked })} />
       </div>
       <div className="property-row">
         <span className="property-label">Corner Radius</span>
-        <input className="property-input" value="22" readOnly />
+        <input className="property-input" type="number" step={1} min={0} max={100}
+          value={settings.cornerRadius}
+          onChange={(e) => saveSettings({ ...settings, cornerRadius: parseFloat(e.target.value) || 0 })} />
       </div>
       <div className="property-row">
-        <span className="property-label">Shadow</span>
-        <input className="property-input" value="0.7" readOnly />
+        <span className="property-label">Shadow Opacity</span>
+        <input className="property-input" type="number" step={0.1} min={0} max={1}
+          value={settings.shadowOpacity}
+          onChange={(e) => saveSettings({ ...settings, shadowOpacity: parseFloat(e.target.value) || 0 })} />
       </div>
     </div>
   );

@@ -57,6 +57,13 @@ fn get_recording_status(state: State<AppState>) -> RecordingStatus {
 }
 
 #[tauri::command]
+fn set_capture_target(target: core::capture::CaptureTarget, state: State<AppState>) -> Result<(), String> {
+    let mut recorder = state.recorder.lock().unwrap();
+    recorder.set_target(target);
+    Ok(())
+}
+
+#[tauri::command]
 fn start_recording(state: State<AppState>) -> Result<(), String> {
     let mut recorder = state.recorder.lock().unwrap();
     recorder.start().map_err(|e| e.to_string())
@@ -520,6 +527,25 @@ fn get_current_project(state: State<AppState>) -> Option<ProjectInfo> {
     })
 }
 
+/// Get the current project's render settings.
+#[tauri::command]
+fn get_render_settings(state: State<AppState>) -> Result<core::project::RenderSettings, String> {
+    let current = state.current_project.lock().unwrap();
+    let loaded = current.as_ref().ok_or("No project loaded")?;
+    Ok(loaded.project.render_settings.clone())
+}
+
+/// Update the current project's render settings.
+#[tauri::command]
+fn update_render_settings(settings: core::project::RenderSettings, state: State<AppState>) -> Result<(), String> {
+    let mut current = state.current_project.lock().unwrap();
+    let loaded = current.as_mut().ok_or("No project loaded")?;
+    loaded.project.render_settings = settings;
+    loaded.project.save(&loaded.package_dir, None, None)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Frame data returned to the frontend for preview rendering.
 /// Contains base64-encoded RGBA pixel data and dimensions.
 #[derive(serde::Serialize)]
@@ -602,6 +628,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_permissions,
             list_capture_sources,
+            set_capture_target,
             get_recording_status,
             start_recording,
             pause_recording,
@@ -616,6 +643,8 @@ pub fn run() {
             get_timeline,
             load_mouse_data,
             generate_keyframes,
+            get_render_settings,
+            update_render_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
