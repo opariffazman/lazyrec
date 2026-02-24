@@ -309,7 +309,7 @@ interface MousePositionData {
 function EditorScreen({ onBack }: { onBack: () => void }) {
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [duration] = useState(30);
+  const [duration, setDuration] = useState(30);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -319,9 +319,43 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     keyframe: Keyframe;
   } | null>(null);
 
-  // Load mouse data from the backend when entering the editor
+  const defaultTracks: Track[] = [
+    { id: "t1", name: "Transform", type: "transform", keyframes: [] },
+    { id: "t2", name: "Ripple", type: "ripple", keyframes: [] },
+    { id: "t3", name: "Cursor", type: "cursor", keyframes: [] },
+    { id: "t4", name: "Keystroke", type: "keystroke", keyframes: [] },
+  ];
+
+  const [tracks, setTracks] = useState<Track[]>(defaultTracks);
+
+  // Load timeline and mouse data from the backend on mount
+  const loadTimelineFromBackend = useCallback(async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const timeline = await invoke<{
+        duration: number;
+        tracks: { id: string; name: string; type: string; keyframes: Keyframe[] }[];
+      }>("get_timeline");
+      if (timeline) {
+        setDuration(timeline.duration > 0 ? timeline.duration : 30);
+        if (timeline.tracks.length > 0) {
+          setTracks(timeline.tracks.map(t => ({
+            id: t.id,
+            name: t.name,
+            type: t.type as Track["type"],
+            keyframes: t.keyframes,
+          })));
+        }
+      }
+    } catch {
+      // No project loaded — keep defaults
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
+      await loadTimelineFromBackend();
+      // Also load mouse data for cursor preview
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const positions = await invoke<MousePositionData[]>("load_mouse_data");
@@ -329,26 +363,10 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
           setMousePositions(positions);
         }
       } catch {
-        // No project loaded or no mouse data — use empty array (preview falls back to simulated)
+        // No mouse data available
       }
     })();
-  }, []);
-  const [tracks, setTracks] = useState<Track[]>([
-    { id: "t1", name: "Transform", type: "transform", keyframes: [
-      { id: "k1", time: 2, zoom: 2.5, centerX: 0.3, centerY: 0.4, easing: "spring" },
-      { id: "k2", time: 8, zoom: 1.8, centerX: 0.6, centerY: 0.5, easing: "easeInOut" },
-      { id: "k3", time: 15, zoom: 1.0, centerX: 0.5, centerY: 0.5, easing: "easeOut" },
-    ]},
-    { id: "t2", name: "Ripple", type: "ripple", keyframes: [
-      { id: "k4", time: 3, intensity: 0.8, rippleDuration: 0.4, color: "leftClick" },
-      { id: "k5", time: 12, intensity: 0.6, rippleDuration: 0.3, color: "rightClick" },
-    ]},
-    { id: "t3", name: "Cursor", type: "cursor", keyframes: [] },
-    { id: "t4", name: "Keystroke", type: "keystroke", keyframes: [
-      { id: "k6", time: 5, text: "Cmd+S", displayDuration: 1.5 },
-      { id: "k7", time: 20, text: "Cmd+Z", displayDuration: 1.5 },
-    ]},
-  ]);
+  }, [loadTimelineFromBackend]);
 
   const playbackRef = useRef<number | null>(null);
   const lastFrameRef = useRef(0);
@@ -416,23 +434,14 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
         rippleCount: number;
         keystrokeCount: number;
         cursorCount: number;
+        total: number;
       }>("generate_keyframes");
 
-      // Reload tracks from generated data — build local track state from counts
-      // The backend has updated the project timeline; reload mouse data for preview too
-      const positions = await invoke<MousePositionData[]>("load_mouse_data").catch(() => []);
-      if (positions && positions.length > 0) setMousePositions(positions);
-
-      // For now, show a summary and reset tracks to reflect that generation happened
-      // In a full implementation we'd fetch the timeline from the backend
       console.log("Generated keyframes:", result);
-      alert(
-        `Generated keyframes:\n` +
-        `  Transform: ${result.transformCount}\n` +
-        `  Ripple: ${result.rippleCount}\n` +
-        `  Keystroke: ${result.keystrokeCount}\n` +
-        `  Cursor: ${result.cursorCount}`
-      );
+
+      // Reload the timeline from backend to reflect generated keyframes
+      await loadTimelineFromBackend();
+      setSelectedKeyframe(null);
     } catch (err) {
       console.error("Generate failed:", err);
       alert(`Failed to generate keyframes: ${err}`);

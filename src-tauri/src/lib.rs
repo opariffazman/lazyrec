@@ -404,6 +404,108 @@ fn generate_keyframes(state: State<AppState>) -> Result<GeneratedKeyframes, Stri
     Ok(result)
 }
 
+/// Serializable timeline data for the frontend
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineData {
+    duration: f64,
+    tracks: Vec<TimelineTrackData>,
+}
+
+/// A single track with its keyframes, serialized for the frontend
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineTrackData {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    track_type: String,
+    keyframes: Vec<serde_json::Value>,
+}
+
+/// Get the current project's timeline as serialized tracks + keyframes.
+#[tauri::command]
+fn get_timeline(state: State<AppState>) -> Result<TimelineData, String> {
+    use core::track::AnyTrack;
+
+    let current = state.current_project.lock().unwrap();
+    let loaded = current.as_ref().ok_or("No project loaded")?;
+    let timeline = &loaded.project.timeline;
+
+    let tracks: Vec<TimelineTrackData> = timeline.tracks.iter().map(|track| {
+        match track {
+            AnyTrack::Transform(t) => TimelineTrackData {
+                id: t.id.to_string(),
+                name: t.name.clone(),
+                track_type: "transform".into(),
+                keyframes: t.keyframes.iter().map(|kf| {
+                    serde_json::json!({
+                        "id": kf.id.to_string(),
+                        "time": kf.time,
+                        "zoom": kf.zoom,
+                        "centerX": kf.center.x,
+                        "centerY": kf.center.y,
+                        "easing": format!("{:?}", kf.easing).to_lowercase(),
+                    })
+                }).collect(),
+            },
+            AnyTrack::Ripple(t) => TimelineTrackData {
+                id: t.id.to_string(),
+                name: t.name.clone(),
+                track_type: "ripple".into(),
+                keyframes: t.keyframes.iter().map(|kf| {
+                    let color_str = match &kf.color {
+                        core::keyframe::RippleColor::LeftClick => "leftClick",
+                        core::keyframe::RippleColor::RightClick => "rightClick",
+                        core::keyframe::RippleColor::Custom { .. } => "custom",
+                    };
+                    serde_json::json!({
+                        "id": kf.id.to_string(),
+                        "time": kf.time,
+                        "intensity": kf.intensity,
+                        "rippleDuration": kf.duration,
+                        "color": color_str,
+                    })
+                }).collect(),
+            },
+            AnyTrack::Cursor(t) => TimelineTrackData {
+                id: t.id.to_string(),
+                name: t.name.clone(),
+                track_type: "cursor".into(),
+                keyframes: t.style_keyframes.as_ref().map_or_else(Vec::new, |kfs| {
+                    kfs.iter().map(|kf| {
+                        serde_json::json!({
+                            "id": kf.id.to_string(),
+                            "time": kf.time,
+                            "scale": kf.scale,
+                            "visible": kf.visible,
+                            "style": format!("{:?}", kf.style).to_lowercase(),
+                        })
+                    }).collect()
+                }),
+            },
+            AnyTrack::Keystroke(t) => TimelineTrackData {
+                id: t.id.to_string(),
+                name: t.name.clone(),
+                track_type: "keystroke".into(),
+                keyframes: t.keyframes.iter().map(|kf| {
+                    serde_json::json!({
+                        "id": kf.id.to_string(),
+                        "time": kf.time,
+                        "text": kf.display_text,
+                        "displayDuration": kf.duration,
+                    })
+                }).collect(),
+            },
+        }
+    }).collect();
+
+    Ok(TimelineData {
+        duration: timeline.duration,
+        tracks,
+    })
+}
+
 /// Get the currently loaded project info.
 #[tauri::command]
 fn get_current_project(state: State<AppState>) -> Option<ProjectInfo> {
@@ -430,16 +532,33 @@ struct FrameData {
 }
 
 /// Extract a video frame at the given time for preview.
-/// Uses the stub video source (or FFmpeg when available).
+/// Uses the loaded project's video file (via FFmpeg when available, else stub).
 /// Throttled by the frontend to avoid excessive calls during scrubbing.
 #[tauri::command]
-fn extract_preview_frame(time: f64) -> Result<FrameData, String> {
-    use core::render::create_video_source;
+fn extract_preview_frame(time: f64, state: State<AppState>) -> Result<FrameData, String> {
+    use core::render::create_video_source_from_file;
     use base64::Engine;
 
-    // Create a video source (stub or FFmpeg in the future).
-    // In production, this would use the project's actual video file.
-    let mut source = create_video_source(640, 360, 30.0, 30.0);
+    let current = state.current_project.lock().unwrap();
+    let loaded = current.as_ref();
+
+    let mut source = if let Some(loaded) = loaded {
+        let video_path = loaded.project.video_path(&loaded.package_dir);
+        create_video_source_from_file(
+            &video_path,
+            loaded.project.media.pixel_size.width as u32,
+            loaded.project.media.pixel_size.height as u32,
+            loaded.project.duration(),
+            loaded.project.media.frame_rate,
+        )
+    } else {
+        // No project loaded — use stub
+        use core::render::create_video_source;
+        create_video_source(640, 360, 30.0, 30.0)
+    };
+
+    // Release lock before potentially slow frame read
+    drop(current);
 
     let frame = source.read_frame(time).map_err(|e| e.to_string())?;
 
@@ -494,6 +613,7 @@ pub fn run() {
             save_project,
             load_project,
             get_current_project,
+            get_timeline,
             load_mouse_data,
             generate_keyframes,
         ])
