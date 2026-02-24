@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import "./App.css";
 
-type Screen = "welcome" | "recording" | "editor";
+type Screen = "welcome" | "recording" | "post-recording" | "editor";
 
 function App() {
   const [screen, setScreen] = useState<Screen>("welcome");
@@ -17,7 +17,14 @@ function App() {
       {screen === "recording" && (
         <RecordingScreen
           onBack={() => setScreen("welcome")}
-          onRecordingComplete={() => setScreen("editor")}
+          onRecordingComplete={() => setScreen("post-recording")}
+        />
+      )}
+      {screen === "post-recording" && (
+        <PostRecordingScreen
+          onQuickExport={() => setScreen("welcome")}
+          onOpenEditor={() => setScreen("editor")}
+          onBack={() => setScreen("welcome")}
         />
       )}
       {screen === "editor" && (
@@ -321,6 +328,142 @@ function RecordingScreen({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Post-Recording Screen (Quick Export or Open Editor)
+// =============================================================================
+
+function PostRecordingScreen({
+  onQuickExport,
+  onOpenEditor,
+  onBack,
+}: {
+  onQuickExport: () => void;
+  onOpenEditor: () => void;
+  onBack: () => void;
+}) {
+  const [status, setStatus] = useState<"idle" | "generating" | "exporting" | "complete" | "error">("idle");
+  const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("");
+  const [exportResult, setExportResult] = useState("");
+
+  const handleQuickExport = async () => {
+    setStatus("generating");
+    setMessage("Generating auto-zoom keyframes...");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { listen } = await import("@tauri-apps/api/event");
+
+      // Step 1: Auto-generate keyframes
+      const genResult = await invoke<{
+        transformCount: number;
+        total: number;
+      }>("generate_keyframes");
+      setMessage(`Generated ${genResult.total} keyframes. Starting export...`);
+
+      // Step 2: Listen for export events
+      setStatus("exporting");
+      const unlistenProgress = await listen<{
+        currentFrame: number;
+        totalFrames: number;
+        progress: number;
+        etaSeconds: number;
+        state: string;
+      }>("export-progress", (event) => {
+        setProgress(event.payload.progress);
+        const pct = Math.round(event.payload.progress * 100);
+        const eta = event.payload.etaSeconds > 0 ? ` (${Math.ceil(event.payload.etaSeconds)}s left)` : "";
+        setMessage(`Exporting: ${pct}%${eta} — ${event.payload.currentFrame}/${event.payload.totalFrames} frames`);
+      });
+      const unlistenComplete = await listen<string>("export-complete", (event) => {
+        setStatus("complete");
+        setProgress(1);
+        setExportResult(event.payload);
+        setMessage("Export complete!");
+        unlistenProgress();
+        unlistenComplete();
+        unlistenError();
+      });
+      const unlistenError = await listen<string>("export-error", (event) => {
+        setStatus("error");
+        setMessage(`Export failed: ${event.payload}`);
+        unlistenProgress();
+        unlistenComplete();
+        unlistenError();
+      });
+
+      // Step 3: Start export
+      await invoke("start_export");
+    } catch (err) {
+      setStatus("error");
+      setMessage(`Error: ${err}`);
+    }
+  };
+
+  return (
+    <div className="post-recording-screen">
+      <div className="post-recording-header">
+        <button className="back-btn" onClick={onBack}>
+          ← Back
+        </button>
+        <h2>Recording Complete</h2>
+      </div>
+
+      {status === "idle" && (
+        <div className="post-recording-choices">
+          <div className="post-recording-card primary" onClick={handleQuickExport}>
+            <div className="card-icon">⚡</div>
+            <h3>Export with Auto-Zoom</h3>
+            <p>Automatically generate zoom effects from your mouse activity and export immediately.</p>
+          </div>
+          <div className="post-recording-card" onClick={onOpenEditor}>
+            <div className="card-icon">🎬</div>
+            <h3>Open in Editor</h3>
+            <p>Fine-tune keyframes, adjust zoom levels, and customize effects before exporting.</p>
+          </div>
+        </div>
+      )}
+
+      {(status === "generating" || status === "exporting") && (
+        <div className="post-recording-progress">
+          <div className="progress-spinner" />
+          <p className="progress-message">{message}</p>
+          {status === "exporting" && (
+            <div className="progress-bar-container">
+              <div className="progress-bar-fill" style={{ width: `${progress * 100}%` }} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {status === "complete" && (
+        <div className="post-recording-complete">
+          <div className="complete-icon">✓</div>
+          <h3>Export Complete</h3>
+          <p className="export-result">{exportResult}</p>
+          <button className="action-btn" onClick={onQuickExport}>
+            Done
+          </button>
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="post-recording-error">
+          <div className="error-icon">✗</div>
+          <p className="error-message">{message}</p>
+          <div className="error-actions">
+            <button className="action-btn" onClick={() => setStatus("idle")}>
+              Try Again
+            </button>
+            <button className="action-btn secondary" onClick={onOpenEditor}>
+              Open Editor Instead
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

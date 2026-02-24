@@ -67,6 +67,29 @@ jobs:
           echo "FFMPEG_DIR=$env:FFMPEG_DIR"
           ffmpeg -version
 
+      - name: Bundle FFmpeg DLLs for installer
+        run: |
+          # Copy FFmpeg shared DLLs to src-tauri so Tauri bundles them
+          $dlls = @(
+            "avcodec-61.dll",
+            "avdevice-61.dll",
+            "avfilter-10.dll",
+            "avformat-61.dll",
+            "avutil-59.dll",
+            "swresample-5.dll",
+            "swscale-8.dll",
+            "postproc-58.dll"
+          )
+          foreach ($dll in $dlls) {
+            $src = "$env:FFMPEG_DIR\bin\$dll"
+            if (Test-Path $src) {
+              Copy-Item $src "src-tauri\"
+              echo "Bundled: $dll"
+            } else {
+              echo "Warning: $dll not found"
+            }
+          }
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -74,6 +97,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Merge FFmpeg DLL resources into bundle config (DLLs copied to src-tauri/ in earlier step)
+          TAURI_CONFIG: '{"bundle":{"resources":{"*.dll":"./"}}}'
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "LazyRec ${{ github.ref_name }}"
