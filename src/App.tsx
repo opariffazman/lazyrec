@@ -191,9 +191,15 @@ function RecordingScreen({
           if (selectedSourceId) {
             const source = sources.find(s => s.id === selectedSourceId);
             if (source) {
-              const target = source.sourceType === "window"
-                ? { type: "window" as const, title: source.name, windowId: 0 }
-                : { type: "display" as const, displayId: 0 };
+              let target;
+              if (source.sourceType === "window") {
+                target = { type: "window" as const, title: source.name, windowId: 0 };
+              } else {
+                // Parse display index from source id (e.g., "display-1" → 1)
+                const idxStr = source.id.replace("display-", "");
+                const displayId = parseInt(idxStr, 10) || 0;
+                target = { type: "display" as const, displayId };
+              }
               await invoke("set_capture_target", { target });
             }
           }

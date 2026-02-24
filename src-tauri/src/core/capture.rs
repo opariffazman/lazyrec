@@ -9,13 +9,21 @@ use serde::{Deserialize, Serialize};
 pub enum CaptureTarget {
     /// Capture entire display
     #[serde(rename = "display")]
-    Display { display_id: u32 },
+    Display {
+        #[serde(alias = "displayId", alias = "display_id")]
+        display_id: u32,
+    },
     /// Capture a specific window
     #[serde(rename = "window")]
-    Window { window_id: u64, title: String },
+    Window {
+        #[serde(alias = "windowId", alias = "window_id")]
+        window_id: u64,
+        title: String,
+    },
     /// Capture a rectangular region of a display
     #[serde(rename = "region")]
     Region {
+        #[serde(alias = "displayId", alias = "display_id")]
         display_id: u32,
         x: f64,
         y: f64,
