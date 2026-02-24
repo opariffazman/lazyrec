@@ -42,12 +42,16 @@ jobs:
           mkdir ffmpeg
           mv ffmpeg-*/* ffmpeg/
           echo "FFMPEG_DIR=${pwd}\ffmpeg" >> $env:GITHUB_ENV
+          echo "FFMPEG_INCLUDE_DIR=${pwd}\ffmpeg\include" >> $env:GITHUB_ENV
           echo "${pwd}\ffmpeg\bin" >> $env:GITHUB_PATH
 
       - name: Verify FFmpeg setup
         run: |
           echo "FFMPEG_DIR=$env:FFMPEG_DIR"
-          ls $env:FFMPEG_DIR\include\libavcodec\
+          echo "FFMPEG_INCLUDE_DIR=$env:FFMPEG_INCLUDE_DIR"
+          # Remove .pc files with hardcoded Unix paths that confuse bindgen
+          Remove-Item -Recurse -Force "$env:FFMPEG_DIR\lib\pkgconfig" -ErrorAction SilentlyContinue
+          ls $env:FFMPEG_DIR\include\libavcodec\ | Select-Object -First 5
           ffmpeg -version
 
       - name: Install frontend dependencies
