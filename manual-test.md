@@ -6,31 +6,31 @@ Run the Windows installer (`LazyRec_0.3.0_x64-setup.exe` or `.msi`) from the Git
 
 ## 1. Installation & Launch
 
-- [ ] Installer runs without errors
-- [ ] App launches and shows the Welcome screen
-- [ ] Window title says "LazyRec"
-- [ ] App icon appears in the taskbar
+- [x] Installer runs without errors
+- [x] App launches and shows the Welcome screen
+- [x] Window title says "LazyRec"
+- [x] App icon appears in the taskbar
 
 ## 2. Welcome Screen
 
-- [ ] Logo, title "LazyRec", and subtitle "Screen Recording & Timeline Editing" are visible
-- [ ] Three action cards displayed: **Record**, **Open Video**, **Open Project**
-- [ ] Hovering a card lifts it slightly (translateY animation)
-- [ ] Drop zone ("Drop video or project here") is visible below cards
+- [x] Logo, title "LazyRec", and subtitle "Screen Recording & Timeline Editing" are visible
+- [x] Three action cards displayed: **Record**, **Open Video**, **Open Project**
+- [x] Hovering a card lifts it slightly (translateY animation)
+- [x] Drop zone ("Drop video or project here") is visible below cards
 - [ ] Dragging a file over the drop zone highlights the border blue
 - [ ] Dropping a `.mp4` file transitions to the Editor screen
-- [ ] Clicking **Record** transitions to the Recording screen
-- [ ] Clicking **Open Video** transitions to the Editor screen
-- [ ] Clicking **Open Project** transitions to the Editor screen
+- [x] Clicking **Record** transitions to the Recording screen
+- [x] Clicking **Open Video** transitions to the Editor screen
+- [x] Clicking **Open Project** transitions to the Editor screen
 
 ## 3. Recording Screen
 
-- [ ] "Recording" header and back button visible
-- [ ] Back button returns to the Welcome screen
-- [ ] Source selector dropdown populates with real display/window names on load
-- [ ] Selecting a different source updates the displayed name and dimensions
-- [ ] Clicking **Start Recording** calls `set_capture_target` before starting
-- [ ] 3-second countdown appears (3 → 2 → 1) with pulse animation
+- [x] "Recording" header and back button visible
+- [x] Back button returns to the Welcome screen
+- [x] Source selector dropdown populates with real display/window names on load
+- [x] Selecting a different source updates the displayed name and dimensions
+- [ ] Clicking **Start Recording** calls `set_capture_target` before starting (invalid args `target` for command `set_capture_target`: missing field `display_id`)
+- [x] 3-second countdown appears (3 → 2 → 1) with pulse animation
 - [ ] After countdown, state changes to "REC" with blinking red dot
 - [ ] Timer counts up in `MM:SS` format
 - [ ] **Pause** button changes label to "PAUSED", dot stops blinking, timer freezes
