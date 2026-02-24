@@ -13,7 +13,8 @@ jobs:
     runs-on: windows-latest
 
     env:
-      FFMPEG_DOWNLOAD_URL: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z
+      # Pin to FFmpeg 7.1 — ffmpeg-sys-next 7.1.3 is incompatible with FFmpeg 8.x
+      FFMPEG_DOWNLOAD_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-full_build-shared.7z
 
     steps:
       - uses: actions/checkout@v4
