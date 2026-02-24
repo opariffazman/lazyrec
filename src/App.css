@@ -1,116 +1,148 @@
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafb);
-}
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
+.app {
+  width: 100vw;
+  height: 100vh;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  background: #0f0f23;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
+/* Welcome Screen */
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
+.welcome {
+  flex: 1;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 32px;
+  padding: 40px;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
+.welcome-logo {
   text-align: center;
 }
 
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+.welcome-logo h1 {
+  margin: 16px 0 0;
+  font-size: 32px;
+  font-weight: 700;
+  color: #fff;
 }
 
-button {
+.subtitle {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: #888;
+}
+
+/* Action Cards */
+
+.action-cards {
+  display: flex;
+  gap: 20px;
+}
+
+.action-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 140px;
+  padding: 20px 16px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 12px;
   cursor: pointer;
+  transition: all 0.15s ease;
+  color: #e0e0e0;
+  font-family: inherit;
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+.action-card:hover {
+  background: #22223a;
+  border-color: #3a3a5e;
+  transform: translateY(-2px);
 }
 
-input,
-button {
-  outline: none;
+.action-icon {
+  font-size: 28px;
 }
 
-#greet-input {
-  margin-right: 5px;
+.action-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+.action-desc {
+  font-size: 11px;
+  color: #888;
+  text-align: center;
+}
 
-  a:hover {
-    color: #24c8db;
-  }
+/* Drop Zone */
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 300px;
+  padding: 24px;
+  border: 2px dashed #2a2a3e;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.drop-zone.dragging {
+  border-color: #4a90d9;
+  background: rgba(74, 144, 217, 0.05);
+}
+
+.drop-icon {
+  font-size: 28px;
+  color: #555;
+}
+
+.drop-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: #666;
+}
+
+.drop-hint {
+  font-size: 11px;
+  color: #444;
+}
+
+.drop-zone.dragging .drop-icon,
+.drop-zone.dragging .drop-text {
+  color: #4a90d9;
+}
+
+/* Placeholder screens */
+
+.placeholder-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.placeholder-screen button {
+  padding: 8px 20px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 8px;
+  color: #e0e0e0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.placeholder-screen button:hover {
+  background: #22223a;
 }
