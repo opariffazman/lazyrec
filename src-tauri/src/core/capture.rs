@@ -227,8 +227,8 @@ pub mod windows {
 
             // Get raw pixel buffer (BGRA)
             let mut buffer = frame.buffer()?;
-            let mut no_padding = Vec::new();
-            let raw = buffer.as_nopadding_buffer(&mut no_padding);
+            let raw = buffer.as_nopadding_buffer()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
             let captured = CapturedFrame {
                 data: raw.to_vec(),
@@ -285,6 +285,9 @@ pub mod windows {
             }
 
             // Enumerate windows
+            // Note: Window dimensions are determined at capture time by the frame callback.
+            // We use nominal defaults here since window.width()/height() are not available
+            // in windows-capture 1.x.
             if let Ok(windows) = Window::enumerate() {
                 for window in windows {
                     if !window.is_valid() {
@@ -294,17 +297,12 @@ pub mod windows {
                         Ok(t) if !t.is_empty() => t,
                         _ => continue,
                     };
-                    let w = window.width().unwrap_or(0);
-                    let h = window.height().unwrap_or(0);
-                    if w == 0 || h == 0 {
-                        continue;
-                    }
                     sources.push(CaptureSource {
                         id: format!("window-{}", title.replace(' ', "_")),
                         name: title,
                         source_type: CaptureSourceType::Window,
-                        width: w,
-                        height: h,
+                        width: 0,
+                        height: 0,
                     });
                 }
             }
