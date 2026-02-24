@@ -1,13 +1,20 @@
 //! Recording coordinator: orchestrates screen capture, input monitoring, and video encoding.
 //! State machine: Idle → Countdown → Recording ↔ Paused → Stopped
+//!
+//! Frame pipeline: capture callback → mpsc channel → encoder thread.
+//! Backpressure: if the channel is full, frames are dropped (logged).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use super::capture::{CaptureConfig, CaptureTarget, ScreenCapture, create_capture};
-use super::encoder::{EncoderConfig, VideoEncoder, create_encoder};
+use super::encoder::{EncoderConfig, VideoEncoder, VideoFrame, create_encoder};
 use super::input::{InputMonitor, InputRecording, create_input_monitor};
 use super::project::{CaptureMeta, MediaAsset, Project, Rect};
 
@@ -91,12 +98,23 @@ pub enum RecorderError {
     Io(#[from] std::io::Error),
 }
 
+/// Max frames buffered in the capture→encoder channel.
+/// If the encoder falls behind, new frames are dropped.
+const FRAME_CHANNEL_CAPACITY: usize = 4;
+
 /// Recording coordinator: manages the full recording lifecycle.
 pub struct RecordingCoordinator {
     state: RecordingState,
     capture: Box<dyn ScreenCapture>,
     input_monitor: Box<dyn InputMonitor>,
     encoder: Option<Box<dyn VideoEncoder>>,
+
+    // Frame pipeline
+    frame_sender: Option<mpsc::SyncSender<VideoFrame>>,
+    encoder_thread: Option<thread::JoinHandle<Result<(u64, PathBuf), String>>>,
+    is_paused: Arc<AtomicBool>,
+    shared_frame_count: Arc<AtomicU64>,
+    dropped_frames: Arc<AtomicU64>,
 
     // Timing
     recording_start: Option<Instant>,
@@ -125,6 +143,11 @@ impl RecordingCoordinator {
             capture: create_capture(),
             input_monitor: create_input_monitor(),
             encoder: None,
+            frame_sender: None,
+            encoder_thread: None,
+            is_paused: Arc::new(AtomicBool::new(false)),
+            shared_frame_count: Arc::new(AtomicU64::new(0)),
+            dropped_frames: Arc::new(AtomicU64::new(0)),
             recording_start: None,
             pause_start: None,
             total_paused: 0.0,
@@ -144,10 +167,17 @@ impl RecordingCoordinator {
     }
 
     pub fn status(&self) -> RecordingStatus {
+        // Use live frame count from encoder thread if recording
+        let frame_count = if self.state == RecordingState::Recording || self.state == RecordingState::Paused {
+            self.shared_frame_count.load(Ordering::Relaxed)
+        } else {
+            self.frame_count
+        };
+
         RecordingStatus {
             state: self.state,
             elapsed: self.elapsed(),
-            frame_count: self.frame_count,
+            frame_count,
         }
     }
 
@@ -191,7 +221,12 @@ impl RecordingCoordinator {
         // Ensure output directory exists
         std::fs::create_dir_all(&self.output_dir)?;
 
-        let video_path = self.output_dir.join("recording.mp4");
+        // Timestamped filename
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let video_path = self.output_dir.join(format!("recording_{timestamp}.mp4"));
 
         // Initialize encoder
         let encoder_config = EncoderConfig::new(
@@ -201,22 +236,65 @@ impl RecordingCoordinator {
         );
         let mut encoder = create_encoder(encoder_config);
         encoder.start()?;
-        self.encoder = Some(encoder);
+
+        // Create frame channel (bounded for backpressure)
+        let (tx, rx) = mpsc::sync_channel::<VideoFrame>(FRAME_CHANNEL_CAPACITY);
+        self.frame_sender = Some(tx.clone());
+
+        // Reset counters
+        self.shared_frame_count.store(0, Ordering::Relaxed);
+        self.dropped_frames.store(0, Ordering::Relaxed);
+        self.is_paused.store(false, Ordering::Relaxed);
+
+        // Spawn encoder thread
+        let frame_count_shared = self.shared_frame_count.clone();
+        let encoder_handle = thread::spawn(move || {
+            let mut encoded = 0u64;
+            while let Ok(frame) = rx.recv() {
+                if let Err(e) = encoder.append_frame(&frame) {
+                    eprintln!("Encoder error: {e}");
+                    // Continue encoding remaining frames
+                }
+                encoded += 1;
+                frame_count_shared.store(encoded, Ordering::Relaxed);
+            }
+            // Channel closed — finalize
+            let path = encoder.finish().map_err(|e| e.to_string())?;
+            Ok((encoded, path))
+        });
+        self.encoder_thread = Some(encoder_handle);
 
         // Start input monitoring
         self.input_monitor.start_monitoring()?;
 
-        // Start screen capture
+        // Start screen capture — frame callback sends to channel
         let target = self.capture_target.clone()
             .unwrap_or(CaptureTarget::Display { display_id: 0 });
+
+        let is_paused = self.is_paused.clone();
+        let dropped = self.dropped_frames.clone();
 
         self.capture.start_capture(
             target,
             self.capture_config.clone(),
-            Box::new(|_frame| {
-                // Frame callback: in a real implementation, this would
-                // feed frames to the encoder on a dedicated thread.
-                // For now, frame counting happens through the encoder.
+            Box::new(move |captured_frame| {
+                // Skip frames while paused
+                if is_paused.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let video_frame = VideoFrame {
+                    data: captured_frame.data,
+                    width: captured_frame.width,
+                    height: captured_frame.height,
+                    stride: captured_frame.stride,
+                    pts: captured_frame.timestamp,
+                };
+
+                // Try to send; drop frame if channel is full (backpressure)
+                if tx.try_send(video_frame).is_err() {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                }
             }),
         )?;
 
@@ -239,6 +317,7 @@ impl RecordingCoordinator {
             });
         }
 
+        self.is_paused.store(true, Ordering::Relaxed);
         self.pause_start = Some(Instant::now());
         self.state = RecordingState::Paused;
         Ok(())
@@ -256,6 +335,7 @@ impl RecordingCoordinator {
         if let Some(pause_start) = self.pause_start.take() {
             self.total_paused += pause_start.elapsed().as_secs_f64();
         }
+        self.is_paused.store(false, Ordering::Relaxed);
         self.state = RecordingState::Recording;
         Ok(())
     }
@@ -272,21 +352,40 @@ impl RecordingCoordinator {
         self.state = RecordingState::Stopping;
         let duration = self.elapsed();
 
-        // Stop capture
+        // Stop capture first (stops producing frames)
         let _ = self.capture.stop_capture();
+
+        // Drop the sender to close the channel, signaling encoder thread to finish
+        self.frame_sender = None;
+
+        // Wait for encoder thread to finish and get results
+        let (encoded_count, video_path) = if let Some(handle) = self.encoder_thread.take() {
+            match handle.join() {
+                Ok(Ok((count, path))) => (count, path),
+                Ok(Err(e)) => {
+                    eprintln!("Encoder thread error: {e}");
+                    (self.shared_frame_count.load(Ordering::Relaxed), self.output_dir.join("recording.mp4"))
+                }
+                Err(_) => {
+                    eprintln!("Encoder thread panicked");
+                    (0, self.output_dir.join("recording.mp4"))
+                }
+            }
+        } else {
+            (0, self.output_dir.join("recording.mp4"))
+        };
+
+        let dropped = self.dropped_frames.load(Ordering::Relaxed);
+        if dropped > 0 {
+            eprintln!("Recording: dropped {dropped} frames due to encoder backpressure");
+        }
+
+        self.frame_count = encoded_count;
 
         // Stop input monitoring
         let input_data = self.input_monitor.stop_monitoring()
             .unwrap_or_default();
 
-        // Finalize encoder
-        let video_path = match self.encoder.as_mut() {
-            Some(enc) => {
-                self.frame_count = enc.frames_encoded();
-                enc.finish()?
-            }
-            None => self.output_dir.join("recording.mp4"),
-        };
         self.encoder = None;
 
         let capture_meta = CaptureMeta::new(
@@ -313,7 +412,17 @@ impl RecordingCoordinator {
         self.total_paused = 0.0;
         self.frame_count = 0;
         self.encoder = None;
+        self.frame_sender = None;
+        self.encoder_thread = None;
+        self.is_paused.store(false, Ordering::Relaxed);
+        self.shared_frame_count.store(0, Ordering::Relaxed);
+        self.dropped_frames.store(0, Ordering::Relaxed);
         self.capture_target = None;
+    }
+
+    /// Number of frames dropped due to encoder backpressure
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_frames.load(Ordering::Relaxed)
     }
 }
 

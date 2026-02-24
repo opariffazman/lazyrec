@@ -8,7 +8,7 @@ use core::capture::create_capture;
 use core::permissions::{create_permissions_manager, PermissionReport};
 use core::capture::CaptureSource;
 use core::recorder::{RecordingCoordinator, RecordingStatus};
-use core::render::ExportProgress;
+use core::render::{ExportProgress, FrameBuffer};
 
 struct AppState {
     recorder: Mutex<RecordingCoordinator>,
@@ -134,6 +134,55 @@ fn get_export_progress(state: State<AppState>) -> Option<ExportProgress> {
     state.export_progress.lock().unwrap().clone()
 }
 
+/// Frame data returned to the frontend for preview rendering.
+/// Contains base64-encoded RGBA pixel data and dimensions.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameData {
+    width: u32,
+    height: u32,
+    /// Base64-encoded RGBA pixel data (width * height * 4 bytes)
+    rgba_base64: String,
+}
+
+/// Extract a video frame at the given time for preview.
+/// Uses the stub video source (or FFmpeg when available).
+/// Throttled by the frontend to avoid excessive calls during scrubbing.
+#[tauri::command]
+fn extract_preview_frame(time: f64) -> Result<FrameData, String> {
+    use core::render::create_video_source;
+    use base64::Engine;
+
+    // Create a video source (stub or FFmpeg in the future).
+    // In production, this would use the project's actual video file.
+    let mut source = create_video_source(640, 360, 30.0, 30.0);
+
+    let frame = source.read_frame(time).map_err(|e| e.to_string())?;
+
+    // Convert BGRA → RGBA for HTML Canvas ImageData
+    let rgba = bgra_to_rgba(&frame);
+
+    let rgba_base64 = base64::engine::general_purpose::STANDARD.encode(&rgba);
+
+    Ok(FrameData {
+        width: frame.width,
+        height: frame.height,
+        rgba_base64,
+    })
+}
+
+/// Convert BGRA pixel data to RGBA for use with HTML Canvas ImageData
+fn bgra_to_rgba(frame: &FrameBuffer) -> Vec<u8> {
+    let mut rgba = vec![0u8; frame.data.len()];
+    for (src, dst) in frame.data.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+        dst[0] = src[2]; // R
+        dst[1] = src[1]; // G
+        dst[2] = src[0]; // B
+        dst[3] = src[3]; // A
+    }
+    rgba
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let output_dir = dirs::video_dir()
@@ -156,6 +205,7 @@ pub fn run() {
             stop_recording,
             start_export,
             get_export_progress,
+            extract_preview_frame,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -486,6 +486,12 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
 // Video Preview
 // =============================================================================
 
+interface FrameData {
+  width: number;
+  height: number;
+  rgbaBase64: string;
+}
+
 function VideoPreview({
   playheadTime,
   duration,
@@ -494,12 +500,50 @@ function VideoPreview({
   duration: number;
 }) {
   const progress = duration > 0 ? playheadTime / duration : 0;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lastFetchTime = useRef(-1);
+  const fetchTimer = useRef<number | null>(null);
+
+  // Throttled frame extraction — fetch at most every 100ms
+  useEffect(() => {
+    if (fetchTimer.current) clearTimeout(fetchTimer.current);
+    fetchTimer.current = window.setTimeout(async () => {
+      // Skip if time hasn't changed enough (avoid redundant fetches)
+      if (Math.abs(playheadTime - lastFetchTime.current) < 0.05) return;
+      lastFetchTime.current = playheadTime;
+
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const frame = await invoke<FrameData>("extract_preview_frame", { time: playheadTime });
+        const canvas = canvasRef.current;
+        if (!canvas || !frame) return;
+
+        canvas.width = frame.width;
+        canvas.height = frame.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        // Decode base64 RGBA data and draw to canvas
+        const binary = atob(frame.rgbaBase64);
+        const bytes = new Uint8ClampedArray(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const imageData = new ImageData(bytes, frame.width, frame.height);
+        ctx.putImageData(imageData, 0, 0);
+      } catch {
+        // Silently fall back to simulated preview
+      }
+    }, 100);
+    return () => { if (fetchTimer.current) clearTimeout(fetchTimer.current); };
+  }, [playheadTime]);
 
   return (
     <div className="preview-area">
       <div className="video-preview">
         <div className="preview-canvas">
-          {/* Simulated zoom/pan viewport indicator */}
+          <canvas ref={canvasRef} className="preview-canvas-element" />
+          {/* Overlay: viewport indicator and cursor */}
           <div
             className="viewport-indicator"
             style={{
