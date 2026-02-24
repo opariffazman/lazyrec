@@ -355,6 +355,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(1);
   const [mousePositions, setMousePositions] = useState<MousePositionData[]>([]);
   const [selectedKeyframe, setSelectedKeyframe] = useState<{
     trackType: string;
@@ -685,27 +686,49 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
           <InspectorPanel selection={selectedKeyframe} onUpdateKeyframe={handleUpdateKeyframe} />
         </div>
 
-        <div className="timeline-panel">
-          <TimelineRuler
-            duration={duration}
-            playheadTime={playheadTime}
-            onSeek={setPlayheadTime}
-          />
-          <div className="timeline-tracks">
-            {tracks.map(track => (
-              <TimelineTrack
-                key={track.id}
-                track={track}
+        <div className="timeline-panel"
+          onWheel={(e) => {
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              setTimelineZoom(prev => Math.max(1, Math.min(20, prev * (e.deltaY < 0 ? 1.15 : 0.87))));
+            }
+          }}
+        >
+          <div className="timeline-zoom-bar">
+            <span className="timeline-zoom-label">Zoom: {Math.round(timelineZoom * 100)}%</span>
+            <input
+              type="range"
+              min={1} max={20} step={0.1}
+              value={timelineZoom}
+              onChange={(e) => setTimelineZoom(parseFloat(e.target.value))}
+              className="timeline-zoom-slider"
+            />
+            <button className="timeline-zoom-reset" onClick={() => setTimelineZoom(1)}>Reset</button>
+          </div>
+          <div className="timeline-scrollable" style={{ overflowX: timelineZoom > 1 ? "auto" : "hidden" }}>
+            <div style={{ width: `${timelineZoom * 100}%`, minWidth: "100%" }}>
+              <TimelineRuler
                 duration={duration}
                 playheadTime={playheadTime}
-                selectedId={selectedKeyframe?.keyframe.id}
-                onSelectKeyframe={(kf) => handleKeyframeSelect(track.type, kf)}
-                onAddKeyframe={() => handleAddKeyframe(track.id)}
-                onMoveKeyframe={(kfId, newTime) => {
-                  handleUpdateKeyframe(kfId, "time", newTime);
-                }}
+                onSeek={setPlayheadTime}
               />
-            ))}
+              <div className="timeline-tracks">
+                {tracks.map(track => (
+                  <TimelineTrack
+                    key={track.id}
+                    track={track}
+                    duration={duration}
+                    playheadTime={playheadTime}
+                    selectedId={selectedKeyframe?.keyframe.id}
+                    onSelectKeyframe={(kf) => handleKeyframeSelect(track.type, kf)}
+                    onAddKeyframe={() => handleAddKeyframe(track.id)}
+                    onMoveKeyframe={(kfId, newTime) => {
+                      handleUpdateKeyframe(kfId, "time", newTime);
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>

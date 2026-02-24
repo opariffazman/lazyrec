@@ -469,6 +469,48 @@
   min-height: 180px;
 }
 
+.timeline-zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid #1a1a2e;
+  font-size: 11px;
+  color: #888;
+}
+
+.timeline-zoom-label {
+  min-width: 80px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-zoom-slider {
+  width: 100px;
+  height: 4px;
+  accent-color: #4a90d9;
+}
+
+.timeline-zoom-reset {
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #888;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.timeline-zoom-reset:hover {
+  border-color: #555;
+  color: #ccc;
+}
+
+.timeline-scrollable {
+  flex: 1;
+  overflow-y: hidden;
+}
+
 /* Ruler */
 
 .timeline-ruler {
