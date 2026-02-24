@@ -291,3 +291,181 @@ impl KeystrokeKeyframe {
         1.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TransformKeyframe tests
+
+    #[test]
+    fn test_transform_keyframe_new_clamps_zoom() {
+        let kf = TransformKeyframe::new(0.0, 0.5, NormalizedPoint::CENTER, EasingCurve::Linear);
+        assert_eq!(kf.zoom, 1.0); // min zoom is 1.0
+    }
+
+    #[test]
+    fn test_transform_keyframe_new_clamps_center() {
+        let kf = TransformKeyframe::new(0.0, 2.0, NormalizedPoint::new(-0.5, 1.5), EasingCurve::Linear);
+        assert_eq!(kf.center.x, 0.0);
+        assert_eq!(kf.center.y, 1.0);
+    }
+
+    #[test]
+    fn test_transform_keyframe_identity() {
+        let kf = TransformKeyframe::identity(5.0);
+        assert_eq!(kf.time, 5.0);
+        assert_eq!(kf.zoom, 1.0);
+        assert_eq!(kf.center, NormalizedPoint::CENTER);
+    }
+
+    #[test]
+    fn test_transform_value_identity() {
+        let v = TransformValue::IDENTITY;
+        assert_eq!(v.zoom, 1.0);
+        assert_eq!(v.center, NormalizedPoint::CENTER);
+    }
+
+    #[test]
+    fn test_transform_value_interpolated() {
+        let a = TransformValue { zoom: 1.0, center: NormalizedPoint::new(0.0, 0.0) };
+        let b = TransformValue { zoom: 3.0, center: NormalizedPoint::new(1.0, 1.0) };
+        let mid = a.interpolated(&b, 0.5);
+        assert!((mid.zoom - 2.0).abs() < 1e-9);
+        assert!((mid.center.x - 0.5).abs() < 1e-9);
+        assert!((mid.center.y - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_transform_value_interpolated_window_mode() {
+        let a = TransformValue { zoom: 1.0, center: NormalizedPoint::new(0.5, 0.5) };
+        let b = TransformValue { zoom: 2.0, center: NormalizedPoint::new(0.5, 0.5) };
+        let mid = a.interpolated_for_window_mode(&b, 0.5);
+        assert!((mid.zoom - 1.5).abs() < 1e-9);
+        // center should stay roughly 0.5 when center is same
+        assert!((mid.center.x - 0.5).abs() < 0.01);
+    }
+
+    // RippleKeyframe tests
+
+    #[test]
+    fn test_ripple_color_rgba() {
+        assert_eq!(RippleColor::LeftClick.rgba(), (0.2, 0.5, 1.0, 0.6));
+        assert_eq!(RippleColor::RightClick.rgba(), (1.0, 0.5, 0.2, 0.6));
+        let custom = RippleColor::Custom { r: 0.1, g: 0.2, b: 0.3, a: 0.4 };
+        assert_eq!(custom.rgba(), (0.1, 0.2, 0.3, 0.4));
+    }
+
+    #[test]
+    fn test_ripple_keyframe_end_time() {
+        let kf = RippleKeyframe::new(2.0, NormalizedPoint::CENTER);
+        assert!((kf.end_time() - 2.4).abs() < 1e-9); // default duration 0.4
+    }
+
+    #[test]
+    fn test_ripple_keyframe_is_active() {
+        let kf = RippleKeyframe::new(1.0, NormalizedPoint::CENTER);
+        assert!(!kf.is_active(0.5));
+        assert!(kf.is_active(1.0));
+        assert!(kf.is_active(1.2));
+        assert!(kf.is_active(1.4));
+        assert!(!kf.is_active(1.5));
+    }
+
+    #[test]
+    fn test_ripple_keyframe_progress() {
+        let kf = RippleKeyframe::new(1.0, NormalizedPoint::CENTER);
+        assert_eq!(kf.progress(0.5), 0.0); // before start
+        assert!((kf.progress(1.2) - 0.5).abs() < 1e-9); // halfway through 0.4s duration
+        assert_eq!(kf.progress(2.0), 0.0); // after end
+    }
+
+    // CursorStyle tests
+
+    #[test]
+    fn test_cursor_style_display_names() {
+        assert_eq!(CursorStyle::Arrow.display_name(), "Arrow");
+        assert_eq!(CursorStyle::IBeam.display_name(), "I-Beam");
+        assert_eq!(CursorStyle::ContextMenu.display_name(), "Context Menu");
+    }
+
+    // KeystrokeKeyframe tests
+
+    #[test]
+    fn test_keystroke_keyframe_end_time() {
+        let kf = KeystrokeKeyframe::new(3.0, "Ctrl+S".into());
+        assert!((kf.end_time() - 4.5).abs() < 1e-9); // duration 1.5
+    }
+
+    #[test]
+    fn test_keystroke_keyframe_is_active() {
+        let kf = KeystrokeKeyframe::new(1.0, "Ctrl+C".into());
+        assert!(!kf.is_active(0.5));
+        assert!(kf.is_active(1.0));
+        assert!(kf.is_active(2.0));
+        assert!(!kf.is_active(2.6));
+    }
+
+    #[test]
+    fn test_keystroke_keyframe_opacity_fade_in() {
+        let kf = KeystrokeKeyframe::new(0.0, "A".into());
+        // At time 0.0 → start of fade-in → opacity ~0
+        assert!(kf.opacity(0.0) < 0.01);
+        // Halfway through fade-in (0.15s) → ~0.5
+        let mid_fade = kf.opacity(0.075);
+        assert!((mid_fade - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_keystroke_keyframe_opacity_full() {
+        let kf = KeystrokeKeyframe::new(0.0, "B".into());
+        // Well past fade-in, before fade-out
+        assert_eq!(kf.opacity(0.5), 1.0);
+    }
+
+    #[test]
+    fn test_keystroke_keyframe_opacity_fade_out() {
+        let kf = KeystrokeKeyframe::new(0.0, "C".into());
+        // 0.15s before end (end = 1.5, fade_out = 0.3)
+        // remaining = 0.15, opacity = 0.15/0.3 = 0.5
+        let t = 1.5 - 0.15;
+        assert!((kf.opacity(t) - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_keystroke_keyframe_opacity_inactive() {
+        let kf = KeystrokeKeyframe::new(5.0, "D".into());
+        assert_eq!(kf.opacity(0.0), 0.0);
+        assert_eq!(kf.opacity(10.0), 0.0);
+    }
+
+    #[test]
+    fn test_keystroke_keyframe_progress() {
+        let kf = KeystrokeKeyframe::new(0.0, "E".into());
+        assert!((kf.progress(0.75) - 0.5).abs() < 0.01); // halfway through 1.5s
+    }
+
+    // Serde roundtrip
+
+    #[test]
+    fn test_transform_keyframe_serde() {
+        let kf = TransformKeyframe::identity(3.0);
+        let json = serde_json::to_string(&kf).unwrap();
+        let restored: TransformKeyframe = serde_json::from_str(&json).unwrap();
+        assert_eq!(kf, restored);
+    }
+
+    #[test]
+    fn test_ripple_color_serde() {
+        let colors = vec![
+            RippleColor::LeftClick,
+            RippleColor::RightClick,
+            RippleColor::Custom { r: 0.1, g: 0.2, b: 0.3, a: 0.4 },
+        ];
+        for c in &colors {
+            let json = serde_json::to_string(c).unwrap();
+            let restored: RippleColor = serde_json::from_str(&json).unwrap();
+            assert_eq!(c, &restored);
+        }
+    }
+}

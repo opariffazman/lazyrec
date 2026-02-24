@@ -148,3 +148,132 @@ impl Default for Timeline {
         Self::new(0.0)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_timeline() {
+        let tl = Timeline::new(10.0);
+        assert_eq!(tl.duration, 10.0);
+        assert!(tl.tracks.is_empty());
+        assert_eq!(tl.trim_start, 0.0);
+        assert_eq!(tl.trim_end, None);
+    }
+
+    #[test]
+    fn test_with_default_tracks() {
+        let tl = Timeline::with_default_tracks(30.0);
+        assert_eq!(tl.tracks.len(), 4);
+        assert_eq!(tl.tracks[0].track_type(), TrackType::Transform);
+        assert_eq!(tl.tracks[1].track_type(), TrackType::Ripple);
+        assert_eq!(tl.tracks[2].track_type(), TrackType::Cursor);
+        assert_eq!(tl.tracks[3].track_type(), TrackType::Keystroke);
+    }
+
+    #[test]
+    fn test_effective_trim_start_clamped() {
+        let mut tl = Timeline::new(10.0);
+        tl.trim_start = -5.0;
+        assert_eq!(tl.effective_trim_start(), 0.0);
+        tl.trim_start = 15.0;
+        assert_eq!(tl.effective_trim_start(), 10.0);
+    }
+
+    #[test]
+    fn test_effective_trim_end_default_and_clamped() {
+        let mut tl = Timeline::new(10.0);
+        assert_eq!(tl.effective_trim_end(), 10.0);
+        tl.trim_end = Some(5.0);
+        assert_eq!(tl.effective_trim_end(), 5.0);
+        tl.trim_end = Some(20.0);
+        assert_eq!(tl.effective_trim_end(), 10.0);
+    }
+
+    #[test]
+    fn test_trimmed_duration() {
+        let mut tl = Timeline::new(10.0);
+        assert_eq!(tl.trimmed_duration(), 10.0);
+        tl.trim_start = 2.0;
+        tl.trim_end = Some(8.0);
+        assert_eq!(tl.trimmed_duration(), 6.0);
+    }
+
+    #[test]
+    fn test_is_trimmed() {
+        let mut tl = Timeline::new(10.0);
+        assert!(!tl.is_trimmed());
+        tl.trim_start = 1.0;
+        assert!(tl.is_trimmed());
+    }
+
+    #[test]
+    fn test_is_time_in_trim_range() {
+        let mut tl = Timeline::new(10.0);
+        tl.trim_start = 2.0;
+        tl.trim_end = Some(8.0);
+        assert!(!tl.is_time_in_trim_range(1.0));
+        assert!(tl.is_time_in_trim_range(5.0));
+        assert!(!tl.is_time_in_trim_range(9.0));
+    }
+
+    #[test]
+    fn test_track_access_typed() {
+        let tl = Timeline::with_default_tracks(10.0);
+        assert!(tl.transform_track().is_some());
+        assert!(tl.ripple_track().is_some());
+        assert!(tl.cursor_track().is_some());
+        assert!(tl.keystroke_track().is_some());
+    }
+
+    #[test]
+    fn test_add_and_remove_track() {
+        let mut tl = Timeline::new(10.0);
+        let track = TransformTrack::new();
+        let id = track.id;
+        tl.add_track(AnyTrack::Transform(track));
+        assert_eq!(tl.tracks.len(), 1);
+        tl.remove_track(id);
+        assert!(tl.tracks.is_empty());
+    }
+
+    #[test]
+    fn test_track_by_id() {
+        let mut tl = Timeline::new(10.0);
+        let track = RippleTrack::new();
+        let id = track.id;
+        tl.add_track(AnyTrack::Ripple(track));
+        assert!(tl.track(id).is_some());
+        assert!(tl.track(Uuid::new_v4()).is_none());
+    }
+
+    #[test]
+    fn test_total_keyframe_count_empty() {
+        let tl = Timeline::with_default_tracks(10.0);
+        assert_eq!(tl.total_keyframe_count(), 0);
+        assert!(tl.is_empty());
+    }
+
+    #[test]
+    fn test_is_valid() {
+        assert!(Timeline::new(10.0).is_valid());
+        assert!(!Timeline::new(0.0).is_valid());
+        assert!(!Timeline::new(-1.0).is_valid());
+    }
+
+    #[test]
+    fn test_default_timeline() {
+        let tl = Timeline::default();
+        assert_eq!(tl.duration, 0.0);
+        assert!(tl.tracks.is_empty());
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let tl = Timeline::with_default_tracks(15.0);
+        let json = serde_json::to_string(&tl).unwrap();
+        let restored: Timeline = serde_json::from_str(&json).unwrap();
+        assert_eq!(tl, restored);
+    }
+}

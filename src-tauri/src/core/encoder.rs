@@ -320,6 +320,112 @@ pub mod ffmpeg_encoder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> EncoderConfig {
+        EncoderConfig::new(1920, 1080, PathBuf::from("/tmp/test_output.mp4"))
+    }
+
+    #[test]
+    fn test_encoder_config_defaults() {
+        let cfg = test_config();
+        assert_eq!(cfg.width, 1920);
+        assert_eq!(cfg.height, 1080);
+        assert_eq!(cfg.frame_rate, 60);
+        assert_eq!(cfg.keyframe_interval, 120);
+        assert!(matches!(cfg.codec, VideoCodec::H265));
+        assert!(matches!(cfg.quality, ExportQuality::High));
+    }
+
+    #[test]
+    fn test_encoder_config_bit_rate() {
+        let cfg = test_config();
+        let br = cfg.bit_rate();
+        assert!(br > 0, "Bit rate should be positive");
+    }
+
+    #[test]
+    fn test_stub_encoder_lifecycle() {
+        let cfg = test_config();
+        let mut enc = StubEncoder::new(cfg);
+        assert!(!enc.is_encoding());
+        assert_eq!(enc.frames_encoded(), 0);
+
+        enc.start().unwrap();
+        assert!(enc.is_encoding());
+
+        let frame = VideoFrame {
+            data: vec![0u8; 1920 * 1080 * 4],
+            width: 1920,
+            height: 1080,
+            stride: 1920 * 4,
+            pts: 0.0,
+        };
+        enc.append_frame(&frame).unwrap();
+        enc.append_frame(&frame).unwrap();
+        assert_eq!(enc.frames_encoded(), 2);
+
+        let path = enc.finish().unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/test_output.mp4"));
+        assert!(!enc.is_encoding());
+    }
+
+    #[test]
+    fn test_stub_encoder_double_start_errors() {
+        let mut enc = StubEncoder::new(test_config());
+        enc.start().unwrap();
+        match enc.start() {
+            Err(EncoderError::AlreadyStarted) => {}
+            other => panic!("Expected AlreadyStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stub_encoder_append_without_start_errors() {
+        let mut enc = StubEncoder::new(test_config());
+        let frame = VideoFrame {
+            data: vec![],
+            width: 0,
+            height: 0,
+            stride: 0,
+            pts: 0.0,
+        };
+        match enc.append_frame(&frame) {
+            Err(EncoderError::NotStarted) => {}
+            other => panic!("Expected NotStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stub_encoder_finish_without_start_errors() {
+        let mut enc = StubEncoder::new(test_config());
+        match enc.finish() {
+            Err(EncoderError::NotStarted) => {}
+            other => panic!("Expected NotStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stub_encoder_start_resets_frame_count() {
+        let mut enc = StubEncoder::new(test_config());
+        enc.start().unwrap();
+        let frame = VideoFrame {
+            data: vec![],
+            width: 0,
+            height: 0,
+            stride: 0,
+            pts: 0.0,
+        };
+        enc.append_frame(&frame).unwrap();
+        assert_eq!(enc.frames_encoded(), 1);
+        enc.finish().unwrap();
+        enc.start().unwrap();
+        assert_eq!(enc.frames_encoded(), 0);
+    }
+}
+
 /// Create the video encoder.
 /// Returns FFmpeg encoder when the `ffmpeg` feature is enabled,
 /// otherwise falls back to the stub encoder.

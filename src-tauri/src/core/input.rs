@@ -514,6 +514,140 @@ pub mod linux {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // InputRecording JSON roundtrip
+
+    #[test]
+    fn test_input_recording_empty_roundtrip() {
+        let rec = InputRecording::new();
+        let json = rec.to_json().unwrap();
+        let restored = InputRecording::from_json(&json).unwrap();
+        assert!(restored.positions.is_empty());
+        assert!(restored.clicks.is_empty());
+        assert!(restored.keyboard.is_empty());
+        assert!(restored.scrolls.is_empty());
+        assert!(restored.drags.is_empty());
+    }
+
+    #[test]
+    fn test_input_recording_with_data_roundtrip() {
+        let mut rec = InputRecording::new();
+        rec.positions.push(MousePositionSample {
+            time: 0.5,
+            position: NormalizedPoint::new(0.3, 0.7),
+            velocity: 1.2,
+        });
+        rec.clicks.push(MouseClickRecord {
+            time: 1.0,
+            position: NormalizedPoint::CENTER,
+            button: MouseButton::Left,
+            duration: 0.1,
+        });
+        rec.keyboard.push(KeyboardRecord {
+            time: 2.0,
+            event_type: KeyAction::Down,
+            key_code: 65,
+            character: Some("a".into()),
+            modifiers: ModifierState { command: false, shift: true, alt: false, control: false },
+        });
+        rec.scrolls.push(ScrollRecord {
+            time: 3.0,
+            position: NormalizedPoint::new(0.5, 0.5),
+            delta_x: 0.0,
+            delta_y: -3.0,
+            is_trackpad: true,
+        });
+        rec.drags.push(DragRecord {
+            start_time: 4.0,
+            end_time: 5.0,
+            start_position: NormalizedPoint::new(0.1, 0.1),
+            end_position: NormalizedPoint::new(0.9, 0.9),
+        });
+        let json = rec.to_json().unwrap();
+        let restored = InputRecording::from_json(&json).unwrap();
+        assert_eq!(restored.positions.len(), 1);
+        assert_eq!(restored.clicks.len(), 1);
+        assert_eq!(restored.keyboard.len(), 1);
+        assert_eq!(restored.scrolls.len(), 1);
+        assert_eq!(restored.drags.len(), 1);
+    }
+
+    #[test]
+    fn test_input_recording_from_invalid_json() {
+        assert!(InputRecording::from_json("not json").is_err());
+    }
+
+    // StubInputMonitor state machine
+
+    #[test]
+    fn test_stub_monitor_initial_state() {
+        let monitor = StubInputMonitor::new();
+        assert!(!monitor.is_monitoring());
+    }
+
+    #[test]
+    fn test_stub_monitor_start_stop() {
+        let mut monitor = StubInputMonitor::new();
+        assert!(monitor.start_monitoring().is_ok());
+        assert!(monitor.is_monitoring());
+        let recording = monitor.stop_monitoring().unwrap();
+        assert!(!monitor.is_monitoring());
+        assert!(recording.positions.is_empty());
+    }
+
+    #[test]
+    fn test_stub_monitor_double_start_errors() {
+        let mut monitor = StubInputMonitor::new();
+        monitor.start_monitoring().unwrap();
+        match monitor.start_monitoring() {
+            Err(InputError::AlreadyMonitoring) => {}
+            other => panic!("Expected AlreadyMonitoring, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stub_monitor_stop_without_start_errors() {
+        let mut monitor = StubInputMonitor::new();
+        match monitor.stop_monitoring() {
+            Err(InputError::NotMonitoring) => {}
+            other => panic!("Expected NotMonitoring, got {:?}", other),
+        }
+    }
+
+    // MouseButton serde
+
+    #[test]
+    fn test_mouse_button_serde() {
+        for btn in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            let json = serde_json::to_string(&btn).unwrap();
+            let restored: MouseButton = serde_json::from_str(&json).unwrap();
+            assert_eq!(btn, restored);
+        }
+    }
+
+    // KeyAction serde
+
+    #[test]
+    fn test_key_action_serde() {
+        for action in [KeyAction::Down, KeyAction::Up] {
+            let json = serde_json::to_string(&action).unwrap();
+            let restored: KeyAction = serde_json::from_str(&json).unwrap();
+            assert_eq!(action, restored);
+        }
+    }
+
+    // ModifierState default
+
+    #[test]
+    fn test_modifier_state_default() {
+        let m = ModifierState::default();
+        assert!(!m.command && !m.shift && !m.alt && !m.control);
+    }
+}
+
 /// Create the platform-appropriate input monitor
 pub fn create_input_monitor() -> Box<dyn InputMonitor> {
     #[cfg(target_os = "windows")]

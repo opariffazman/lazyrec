@@ -290,3 +290,120 @@ impl AnyTrack {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::coordinates::NormalizedPoint;
+    use crate::core::easing::EasingCurve;
+
+    #[test]
+    fn test_transform_track_add_keyframe_sorted() {
+        let mut track = TransformTrack::new();
+        let kf1 = TransformKeyframe::new(2.0, 1.5, NormalizedPoint::CENTER, EasingCurve::Linear);
+        let kf2 = TransformKeyframe::new(1.0, 2.0, NormalizedPoint::CENTER, EasingCurve::Linear);
+        track.add_keyframe(kf1);
+        track.add_keyframe(kf2);
+        assert_eq!(track.keyframe_count(), 2);
+        assert!(track.keyframes[0].time < track.keyframes[1].time);
+    }
+
+    #[test]
+    fn test_transform_track_remove_keyframe() {
+        let mut track = TransformTrack::new();
+        let kf = TransformKeyframe::new(1.0, 1.0, NormalizedPoint::CENTER, EasingCurve::Linear);
+        let id = kf.id;
+        track.add_keyframe(kf);
+        assert_eq!(track.keyframe_count(), 1);
+        track.remove_keyframe(id);
+        assert_eq!(track.keyframe_count(), 0);
+    }
+
+    #[test]
+    fn test_transform_track_update_keyframe_resorts() {
+        let mut track = TransformTrack::new();
+        let kf1 = TransformKeyframe::new(1.0, 1.0, NormalizedPoint::CENTER, EasingCurve::Linear);
+        let kf2 = TransformKeyframe::new(3.0, 1.0, NormalizedPoint::CENTER, EasingCurve::Linear);
+        let id2 = kf2.id;
+        track.add_keyframe(kf1);
+        track.add_keyframe(kf2);
+        // Move kf2 to time 0.5 — it should become first
+        let mut updated = track.keyframes[1].clone();
+        updated.time = 0.5;
+        track.update_keyframe(updated);
+        assert_eq!(track.keyframes[0].id, id2);
+    }
+
+    #[test]
+    fn test_transform_track_keyframe_at() {
+        let mut track = TransformTrack::new();
+        track.add_keyframe(TransformKeyframe::new(
+            5.0, 1.5, NormalizedPoint::CENTER, EasingCurve::Linear,
+        ));
+        assert!(track.keyframe_at(5.0, 0.01).is_some());
+        assert!(track.keyframe_at(5.005, 0.01).is_some());
+        assert!(track.keyframe_at(6.0, 0.01).is_none());
+    }
+
+    #[test]
+    fn test_transform_track_keyframes_in_range() {
+        let mut track = TransformTrack::new();
+        for t in [1.0, 3.0, 5.0, 7.0] {
+            track.add_keyframe(TransformKeyframe::new(
+                t, 1.0, NormalizedPoint::CENTER, EasingCurve::Linear,
+            ));
+        }
+        let range = track.keyframes_in_range(2.0, 6.0);
+        assert_eq!(range.len(), 2); // 3.0 and 5.0
+    }
+
+    #[test]
+    fn test_ripple_track_active_ripples() {
+        let mut track = RippleTrack::new();
+        let mut kf = RippleKeyframe::new(1.0, NormalizedPoint::CENTER);
+        kf.duration = 0.5;
+        track.add_keyframe(kf);
+        assert_eq!(track.active_ripples(1.2).len(), 1);
+        assert_eq!(track.active_ripples(2.0).len(), 0);
+    }
+
+    #[test]
+    fn test_cursor_track_defaults() {
+        let track = CursorTrack::new();
+        assert_eq!(track.default_style, CursorStyle::Arrow);
+        assert_eq!(track.default_scale, 2.5);
+        assert!(track.default_visible);
+        assert_eq!(track.keyframe_count(), 0);
+    }
+
+    #[test]
+    fn test_keystroke_track_active_keystrokes() {
+        let mut track = KeystrokeTrack::new();
+        let kf = KeystrokeKeyframe::new(2.0, "Ctrl+C".into());
+        track.add_keyframe(kf);
+        assert_eq!(track.active_keystrokes(2.5).len(), 1);
+        assert_eq!(track.active_keystrokes(5.0).len(), 0);
+    }
+
+    #[test]
+    fn test_any_track_delegates() {
+        let track = TransformTrack::new();
+        let id = track.id;
+        let any = AnyTrack::Transform(track);
+        assert_eq!(any.id(), id);
+        assert_eq!(any.name(), "Transform");
+        assert!(any.is_enabled());
+        assert_eq!(any.track_type(), TrackType::Transform);
+        assert_eq!(any.keyframe_count(), 0);
+    }
+
+    #[test]
+    fn test_any_track_serde_roundtrip() {
+        let mut track = RippleTrack::new();
+        track.add_keyframe(RippleKeyframe::new(1.0, NormalizedPoint::new(0.3, 0.7)));
+        let any = AnyTrack::Ripple(track);
+        let json = serde_json::to_string(&any).unwrap();
+        let restored: AnyTrack = serde_json::from_str(&json).unwrap();
+        assert_eq!(any, restored);
+    }
+}

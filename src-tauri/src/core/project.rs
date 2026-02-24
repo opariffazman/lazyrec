@@ -456,3 +456,170 @@ impl KeyModifiers {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_media() -> MediaAsset {
+        MediaAsset {
+            video_relative_path: "recording.mp4".into(),
+            mouse_data_relative_path: "recording_mouse.json".into(),
+            pixel_size: Size::new(1920.0, 1080.0),
+            frame_rate: 60.0,
+            duration: 30.0,
+        }
+    }
+
+    fn test_capture_meta() -> CaptureMeta {
+        CaptureMeta::new(Rect::new(0.0, 0.0, 960.0, 540.0), 2.0)
+    }
+
+    #[test]
+    fn test_project_new() {
+        let project = Project::new("Test".into(), test_media(), test_capture_meta());
+        assert_eq!(project.name, "Test");
+        assert_eq!(project.version, 1);
+        assert_eq!(project.duration(), 30.0);
+        assert_eq!(project.total_frames(), 1800);
+        assert!(!project.is_window_mode());
+    }
+
+    #[test]
+    fn test_media_aspect_ratio() {
+        let media = test_media();
+        let ratio = media.aspect_ratio();
+        assert!((ratio - 16.0 / 9.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_media_total_frames() {
+        let media = test_media();
+        assert_eq!(media.total_frames(), 1800);
+    }
+
+    #[test]
+    fn test_media_frame_duration() {
+        let media = test_media();
+        assert!((media.frame_duration() - 1.0 / 60.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_media_zero_height_aspect() {
+        let mut media = test_media();
+        media.pixel_size.height = 0.0;
+        assert!((media.aspect_ratio() - 16.0 / 9.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_media_zero_fps_frame_duration() {
+        let mut media = test_media();
+        media.frame_rate = 0.0;
+        assert!((media.frame_duration() - 1.0 / 60.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_capture_meta_size_pixel() {
+        let meta = test_capture_meta();
+        let size = meta.size_pixel();
+        assert!((size.width - 1920.0).abs() < 0.001);
+        assert!((size.height - 1080.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_project_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("lazyrec_test_{}", uuid::Uuid::new_v4()));
+        let mut project = Project::new("Roundtrip".into(), test_media(), test_capture_meta());
+
+        project.save(&dir, None, None).unwrap();
+        let loaded = Project::load(&dir).unwrap();
+
+        assert_eq!(loaded.name, "Roundtrip");
+        assert_eq!(loaded.duration(), 30.0);
+        assert_eq!(loaded.media.frame_rate, 60.0);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_project_load_not_found() {
+        let result = Project::load(std::path::Path::new("/nonexistent/path.lazyrec"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_project_video_path() {
+        let project = Project::new("Test".into(), test_media(), test_capture_meta());
+        let pkg = PathBuf::from("/tmp/test.lazyrec");
+        assert_eq!(project.video_path(&pkg), pkg.join("recording").join("recording.mp4"));
+    }
+
+    #[test]
+    fn test_project_mouse_data_path() {
+        let project = Project::new("Test".into(), test_media(), test_capture_meta());
+        let pkg = PathBuf::from("/tmp/test.lazyrec");
+        assert_eq!(project.mouse_data_path(&pkg), pkg.join("recording").join("recording_mouse.json"));
+    }
+
+    #[test]
+    fn test_output_resolution_sizes() {
+        let source = Size::new(2560.0, 1440.0);
+        assert_eq!(OutputResolution::Original.size(&source).width, 2560.0);
+        assert_eq!(OutputResolution::Uhd4k.size(&source).width, 3840.0);
+        assert_eq!(OutputResolution::Fhd1080.size(&source).height, 1080.0);
+        assert_eq!(OutputResolution::Hd720.size(&source).width, 1280.0);
+        let custom = OutputResolution::Custom { width: 800, height: 600 };
+        assert_eq!(custom.size(&source).width, 800.0);
+    }
+
+    #[test]
+    fn test_output_frame_rate_value() {
+        assert_eq!(OutputFrameRate::Original.value(60.0), 60.0);
+        assert_eq!(OutputFrameRate::Fixed { fps: 30 }.value(60.0), 30.0);
+    }
+
+    #[test]
+    fn test_video_codec() {
+        assert_eq!(VideoCodec::H264.file_extension(), "mp4");
+        assert_eq!(VideoCodec::H265.display_name(), "H.265 (HEVC)");
+    }
+
+    #[test]
+    fn test_export_quality_bit_rate() {
+        let br = ExportQuality::High.bit_rate(1920.0, 1080.0);
+        assert!(br > 0);
+        assert!(ExportQuality::Original.bit_rate_multiplier() > ExportQuality::High.bit_rate_multiplier());
+    }
+
+    #[test]
+    fn test_render_settings_default() {
+        let s = RenderSettings::default();
+        assert!(!s.background_enabled);
+        assert!((s.corner_radius - 22.0).abs() < 0.001);
+        assert_eq!(s.codec, VideoCodec::H265);
+    }
+
+    #[test]
+    fn test_key_modifiers_to_strings() {
+        let mods = KeyModifiers {
+            command: true,
+            shift: true,
+            alt: false,
+            control: false,
+            function_key: false,
+            caps_lock: false,
+        };
+        let strings = mods.to_strings();
+        assert_eq!(strings, vec!["command", "shift"]);
+    }
+
+    #[test]
+    fn test_project_serde_roundtrip() {
+        let project = Project::new("Serde".into(), test_media(), test_capture_meta());
+        let json = serde_json::to_string(&project).unwrap();
+        let loaded: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.name, "Serde");
+        assert_eq!(loaded.duration(), 30.0);
+    }
+}
