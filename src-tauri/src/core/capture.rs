@@ -172,43 +172,244 @@ pub mod stub {
     }
 }
 
-/// Platform-specific capture implementations
+/// Windows capture via WinRT Graphics Capture API (windows-capture crate).
+/// Runs capture in a background thread with CaptureControl for non-blocking operation.
 #[cfg(target_os = "windows")]
 pub mod windows {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
+    use windows_capture::frame::Frame;
+    use windows_capture::graphics_capture_api::InternalCaptureControl;
+    use windows_capture::monitor::Monitor;
+    use windows_capture::settings::{
+        ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+        MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+    };
+    use windows_capture::window::Window;
+
+    /// Shared state passed into the capture handler via Flags
+    struct CaptureFlags {
+        on_frame: Mutex<Box<dyn FnMut(CapturedFrame) + Send>>,
+        start_time: Instant,
+        should_stop: AtomicBool,
+        frame_count: AtomicU64,
+    }
+
+    struct CaptureHandler {
+        flags: Arc<CaptureFlags>,
+    }
+
+    impl GraphicsCaptureApiHandler for CaptureHandler {
+        type Flags = Arc<CaptureFlags>;
+        type Error = Box<dyn std::error::Error + Send + Sync>;
+
+        fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+            Ok(Self { flags: ctx.flags })
+        }
+
+        fn on_frame_arrived(
+            &mut self,
+            frame: &mut Frame,
+            capture_control: InternalCaptureControl,
+        ) -> Result<(), Self::Error> {
+            if self.flags.should_stop.load(Ordering::Relaxed) {
+                capture_control.stop();
+                return Ok(());
+            }
+
+            let width = frame.width();
+            let height = frame.height();
+            let timestamp = self.flags.start_time.elapsed().as_secs_f64();
+
+            // Get raw pixel buffer (BGRA)
+            let mut buffer = frame.buffer()?;
+            let mut no_padding = Vec::new();
+            let raw = buffer.as_nopadding_buffer(&mut no_padding);
+
+            let captured = CapturedFrame {
+                data: raw.to_vec(),
+                width,
+                height,
+                stride: width * 4,
+                pixel_format: PixelFormat::Bgra8,
+                timestamp,
+            };
+
+            if let Ok(mut callback) = self.flags.on_frame.lock() {
+                callback(captured);
+            }
+
+            self.flags.frame_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
 
     pub struct WindowsCapture {
         capturing: bool,
+        control: Option<CaptureControl<CaptureHandler, Box<dyn std::error::Error + Send + Sync>>>,
+        flags: Option<Arc<CaptureFlags>>,
     }
 
     impl WindowsCapture {
         pub fn new() -> Self {
-            Self { capturing: false }
+            Self {
+                capturing: false,
+                control: None,
+                flags: None,
+            }
         }
     }
 
     impl ScreenCapture for WindowsCapture {
         fn enumerate_sources(&self) -> Result<Vec<CaptureSource>, CaptureError> {
-            // TODO: Use DXGI to enumerate outputs and EnumWindows for windows
-            Ok(vec![CaptureSource {
-                id: "display-0".into(),
-                name: "Primary Display".into(),
-                source_type: CaptureSourceType::Display,
-                width: 1920,
-                height: 1080,
-            }])
+            let mut sources = Vec::new();
+
+            // Enumerate monitors
+            if let Ok(monitors) = Monitor::enumerate() {
+                for (i, monitor) in monitors.iter().enumerate() {
+                    let name = monitor.name().unwrap_or_else(|_| format!("Display {}", i + 1));
+                    let w = monitor.width().unwrap_or(1920);
+                    let h = monitor.height().unwrap_or(1080);
+                    sources.push(CaptureSource {
+                        id: format!("display-{}", i),
+                        name,
+                        source_type: CaptureSourceType::Display,
+                        width: w,
+                        height: h,
+                    });
+                }
+            }
+
+            // Enumerate windows
+            if let Ok(windows) = Window::enumerate() {
+                for window in windows {
+                    if !window.is_valid() {
+                        continue;
+                    }
+                    let title = match window.title() {
+                        Ok(t) if !t.is_empty() => t,
+                        _ => continue,
+                    };
+                    let w = window.width().unwrap_or(0);
+                    let h = window.height().unwrap_or(0);
+                    if w == 0 || h == 0 {
+                        continue;
+                    }
+                    sources.push(CaptureSource {
+                        id: format!("window-{}", title.replace(' ', "_")),
+                        name: title,
+                        source_type: CaptureSourceType::Window,
+                        width: w,
+                        height: h,
+                    });
+                }
+            }
+
+            if sources.is_empty() {
+                // Fallback
+                sources.push(CaptureSource {
+                    id: "display-0".into(),
+                    name: "Primary Display".into(),
+                    source_type: CaptureSourceType::Display,
+                    width: 1920,
+                    height: 1080,
+                });
+            }
+
+            Ok(sources)
         }
 
         fn start_capture(
             &mut self,
-            _target: CaptureTarget,
+            target: CaptureTarget,
             _config: CaptureConfig,
-            _on_frame: Box<dyn FnMut(CapturedFrame) + Send>,
+            on_frame: Box<dyn FnMut(CapturedFrame) + Send>,
         ) -> Result<(), CaptureError> {
             if self.capturing {
                 return Err(CaptureError::AlreadyCapturing);
             }
-            // TODO: Initialize DXGI Desktop Duplication or Windows.Graphics.Capture
+
+            let flags = Arc::new(CaptureFlags {
+                on_frame: Mutex::new(on_frame),
+                start_time: Instant::now(),
+                should_stop: AtomicBool::new(false),
+                frame_count: AtomicU64::new(0),
+            });
+
+            // Build settings based on target
+            let control = match target {
+                CaptureTarget::Display { display_id } => {
+                    let monitor = if display_id == 0 {
+                        Monitor::primary()
+                    } else {
+                        Monitor::from_index(display_id as usize)
+                    }
+                    .map_err(|e| CaptureError::Platform(format!("Monitor not found: {e}")))?;
+
+                    let settings = Settings::new(
+                        monitor,
+                        CursorCaptureSettings::WithCursor,
+                        DrawBorderSettings::WithoutBorder,
+                        SecondaryWindowSettings::Default,
+                        MinimumUpdateIntervalSettings::Default,
+                        DirtyRegionSettings::Default,
+                        ColorFormat::Bgra8,
+                        flags.clone(),
+                    );
+
+                    CaptureHandler::start_free_threaded(settings)
+                        .map_err(|e| CaptureError::Platform(e.to_string()))?
+                }
+                CaptureTarget::Window { title, .. } => {
+                    let window = Window::from_contains_name(&title)
+                        .map_err(|e| CaptureError::Platform(format!("Window not found: {e}")))?;
+
+                    let settings = Settings::new(
+                        window,
+                        CursorCaptureSettings::WithCursor,
+                        DrawBorderSettings::WithoutBorder,
+                        SecondaryWindowSettings::Default,
+                        MinimumUpdateIntervalSettings::Default,
+                        DirtyRegionSettings::Default,
+                        ColorFormat::Bgra8,
+                        flags.clone(),
+                    );
+
+                    CaptureHandler::start_free_threaded(settings)
+                        .map_err(|e| CaptureError::Platform(e.to_string()))?
+                }
+                CaptureTarget::Region { display_id, .. } => {
+                    // Fall back to full display capture for regions
+                    // (cropping happens in the render pipeline)
+                    let monitor = if display_id == 0 {
+                        Monitor::primary()
+                    } else {
+                        Monitor::from_index(display_id as usize)
+                    }
+                    .map_err(|e| CaptureError::Platform(format!("Monitor not found: {e}")))?;
+
+                    let settings = Settings::new(
+                        monitor,
+                        CursorCaptureSettings::WithCursor,
+                        DrawBorderSettings::WithoutBorder,
+                        SecondaryWindowSettings::Default,
+                        MinimumUpdateIntervalSettings::Default,
+                        DirtyRegionSettings::Default,
+                        ColorFormat::Bgra8,
+                        flags.clone(),
+                    );
+
+                    CaptureHandler::start_free_threaded(settings)
+                        .map_err(|e| CaptureError::Platform(e.to_string()))?
+                }
+            };
+
+            self.flags = Some(flags);
+            self.control = Some(control);
             self.capturing = true;
             Ok(())
         }
@@ -217,7 +418,18 @@ pub mod windows {
             if !self.capturing {
                 return Err(CaptureError::NotCapturing);
             }
-            // TODO: Release DXGI resources
+
+            // Signal the capture handler to stop
+            if let Some(flags) = &self.flags {
+                flags.should_stop.store(true, Ordering::Relaxed);
+            }
+
+            // Stop the capture control (waits for thread)
+            if let Some(control) = self.control.take() {
+                let _ = control.stop();
+            }
+
+            self.flags = None;
             self.capturing = false;
             Ok(())
         }

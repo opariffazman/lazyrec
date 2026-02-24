@@ -269,7 +269,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     trackType: string;
     keyframe: Keyframe;
   } | null>(null);
-  const [tracks] = useState<Track[]>([
+  const [tracks, setTracks] = useState<Track[]>([
     { id: "t1", name: "Transform", type: "transform", keyframes: [
       { id: "k1", time: 2, zoom: 2.5, centerX: 0.3, centerY: 0.4, easing: "spring" },
       { id: "k2", time: 8, zoom: 1.8, centerX: 0.6, centerY: 0.5, easing: "easeInOut" },
@@ -347,6 +347,54 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     setPlayheadTime(kf.time);
   };
 
+  let nextKfId = useRef(100);
+  const createDefaultKeyframe = (trackType: string, time: number): Keyframe => {
+    const id = `k${nextKfId.current++}`;
+    switch (trackType) {
+      case "transform":
+        return { id, time, zoom: 1.0, centerX: 0.5, centerY: 0.5, easing: "easeInOut" };
+      case "ripple":
+        return { id, time, intensity: 0.8, rippleDuration: 0.4, color: "leftClick" };
+      case "keystroke":
+        return { id, time, text: "Key", displayDuration: 1.5 };
+      default:
+        return { id, time };
+    }
+  };
+
+  const handleAddKeyframe = (trackId: string) => {
+    setTracks(prev => prev.map(track => {
+      if (track.id !== trackId) return track;
+      const kf = createDefaultKeyframe(track.type, playheadTime);
+      const keyframes = [...track.keyframes, kf].sort((a, b) => a.time - b.time);
+      return { ...track, keyframes };
+    }));
+  };
+
+  const handleDeleteKeyframe = useCallback(() => {
+    if (!selectedKeyframe) return;
+    const kfId = selectedKeyframe.keyframe.id;
+    setTracks(prev => prev.map(track => ({
+      ...track,
+      keyframes: track.keyframes.filter(k => k.id !== kfId),
+    })));
+    setSelectedKeyframe(null);
+  }, [selectedKeyframe]);
+
+  // Delete key handler
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Delete" || e.key === "Backspace") {
+        // Don't delete if user is typing in an input
+        if ((e.target as HTMLElement).tagName === "INPUT" ||
+            (e.target as HTMLElement).tagName === "SELECT") return;
+        handleDeleteKeyframe();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [handleDeleteKeyframe]);
+
   return (
     <div className="editor-screen">
       <div className="editor-header">
@@ -408,6 +456,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
                 playheadTime={playheadTime}
                 selectedId={selectedKeyframe?.keyframe.id}
                 onSelectKeyframe={(kf) => handleKeyframeSelect(track.type, kf)}
+                onAddKeyframe={() => handleAddKeyframe(track.id)}
               />
             ))}
           </div>
@@ -697,12 +746,14 @@ function TimelineTrack({
   playheadTime,
   selectedId,
   onSelectKeyframe,
+  onAddKeyframe,
 }: {
   track: Track;
   duration: number;
   playheadTime: number;
   selectedId?: string;
   onSelectKeyframe?: (kf: Keyframe) => void;
+  onAddKeyframe?: () => void;
 }) {
   const color = TRACK_COLORS[track.type] || "#888";
 
@@ -711,7 +762,7 @@ function TimelineTrack({
       <div className="track-label" style={{ borderLeftColor: color }}>
         {track.name}
       </div>
-      <div className="track-lane">
+      <div className="track-lane" onDoubleClick={() => onAddKeyframe?.()}>
         {track.keyframes.map(kf => (
           <div
             key={kf.id}

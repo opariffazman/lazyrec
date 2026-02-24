@@ -163,21 +163,177 @@ impl InputMonitor for StubInputMonitor {
     }
 }
 
-/// Platform-specific input monitor implementations
+/// Windows input monitoring via low-level hooks (SetWindowsHookEx) and GetCursorPos polling.
+///
+/// Architecture:
+/// - A dedicated thread runs the Windows message loop for hook callbacks
+/// - A 60Hz timer thread polls GetCursorPos for mouse position samples
+/// - All events are collected into a shared InputRecording
+/// - stop_monitoring() signals threads to stop and returns the recording
 #[cfg(target_os = "windows")]
 pub mod windows {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use ::windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use ::windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, HORZRES, VERTRES};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetCursorPos, SetWindowsHookExW, UnhookWindowsHookEx,
+        GetMessageW, HHOOK, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
+        WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    /// Thread-safe shared state for hook callbacks
+    struct HookState {
+        recording: Mutex<InputRecording>,
+        start_time: Instant,
+        should_stop: AtomicBool,
+        screen_width: f64,
+        screen_height: f64,
+        last_position: Mutex<NormalizedPoint>,
+    }
+
+    // Global state for hook callbacks (Windows hooks require static/global access)
+    static HOOK_STATE: std::sync::OnceLock<Arc<HookState>> = std::sync::OnceLock::new();
+
+    fn elapsed(state: &HookState) -> f64 {
+        state.start_time.elapsed().as_secs_f64()
+    }
+
+    fn normalize_point(state: &HookState, x: i32, y: i32) -> NormalizedPoint {
+        NormalizedPoint::new(
+            (x as f64 / state.screen_width).clamp(0.0, 1.0),
+            (y as f64 / state.screen_height).clamp(0.0, 1.0),
+        )
+    }
+
+    unsafe extern "system" fn mouse_hook_proc(
+        n_code: i32,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> LRESULT {
+        if n_code >= 0 {
+            if let Some(state) = HOOK_STATE.get() {
+                let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
+                let pos = normalize_point(state, info.pt.x, info.pt.y);
+                let time = elapsed(state);
+
+                let msg = w_param.0 as u32;
+                match msg {
+                    WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+                        let button = match msg {
+                            WM_LBUTTONDOWN => MouseButton::Left,
+                            WM_RBUTTONDOWN => MouseButton::Right,
+                            _ => MouseButton::Middle,
+                        };
+                        if let Ok(mut rec) = state.recording.lock() {
+                            rec.clicks.push(MouseClickRecord {
+                                time,
+                                position: pos,
+                                button,
+                                duration: 0.0, // Updated on button up
+                            });
+                        }
+                    }
+                    WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
+                        // Update duration of last matching click
+                        let button = match msg {
+                            WM_LBUTTONUP => MouseButton::Left,
+                            WM_RBUTTONUP => MouseButton::Right,
+                            _ => MouseButton::Middle,
+                        };
+                        if let Ok(mut rec) = state.recording.lock() {
+                            if let Some(click) = rec.clicks.iter_mut().rev()
+                                .find(|c| c.button == button && c.duration == 0.0)
+                            {
+                                click.duration = time - click.time;
+                            }
+                        }
+                    }
+                    WM_MOUSEWHEEL => {
+                        let delta = (info.mouseData >> 16) as i16 as f64 / 120.0;
+                        if let Ok(mut rec) = state.recording.lock() {
+                            rec.scrolls.push(ScrollRecord {
+                                time,
+                                position: pos,
+                                delta_x: 0.0,
+                                delta_y: delta,
+                                is_trackpad: false,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
+    }
+
+    unsafe extern "system" fn keyboard_hook_proc(
+        n_code: i32,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> LRESULT {
+        if n_code >= 0 {
+            if let Some(state) = HOOK_STATE.get() {
+                let info = &*(l_param.0 as *const KBDLLHOOKSTRUCT);
+                let time = elapsed(state);
+                let msg = w_param.0 as u32;
+
+                let event_type = match msg {
+                    WM_KEYDOWN | WM_SYSKEYDOWN => KeyAction::Down,
+                    WM_KEYUP | WM_SYSKEYUP => KeyAction::Up,
+                    _ => KeyAction::Down,
+                };
+
+                // Read modifier state from flags
+                let modifiers = ModifierState {
+                    shift: (unsafe { ::windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x10) } & 0x8000u16 as i16) != 0,
+                    control: (unsafe { ::windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x11) } & 0x8000u16 as i16) != 0,
+                    alt: (unsafe { ::windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } & 0x8000u16 as i16) != 0,
+                    command: (unsafe { ::windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x5B) } & 0x8000u16 as i16) != 0,
+                };
+
+                if let Ok(mut rec) = state.recording.lock() {
+                    rec.keyboard.push(KeyboardRecord {
+                        time,
+                        event_type,
+                        key_code: info.vkCode as u16,
+                        character: None, // VK to char mapping can be added later
+                        modifiers,
+                    });
+                }
+            }
+        }
+        unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
+    }
 
     pub struct WindowsInputMonitor {
         monitoring: bool,
-        recording: InputRecording,
+        hook_thread: Option<std::thread::JoinHandle<()>>,
+        poll_thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl WindowsInputMonitor {
         pub fn new() -> Self {
             Self {
                 monitoring: false,
-                recording: InputRecording::new(),
+                hook_thread: None,
+                poll_thread: None,
+            }
+        }
+
+        fn get_screen_size() -> (f64, f64) {
+            unsafe {
+                let hdc = GetDC(None);
+                let w = GetDeviceCaps(hdc, HORZRES) as f64;
+                let h = GetDeviceCaps(hdc, VERTRES) as f64;
+                let _ = ReleaseDC(None, hdc);
+                (if w > 0.0 { w } else { 1920.0 }, if h > 0.0 { h } else { 1080.0 })
             }
         }
     }
@@ -187,9 +343,88 @@ pub mod windows {
             if self.monitoring {
                 return Err(InputError::AlreadyMonitoring);
             }
-            self.recording = InputRecording::new();
-            // TODO: SetWindowsHookEx for WH_MOUSE_LL and WH_KEYBOARD_LL
-            // TODO: Start 60Hz position polling timer (GetCursorPos)
+
+            let (sw, sh) = Self::get_screen_size();
+
+            let state = Arc::new(HookState {
+                recording: Mutex::new(InputRecording::new()),
+                start_time: Instant::now(),
+                should_stop: AtomicBool::new(false),
+                screen_width: sw,
+                screen_height: sh,
+                last_position: Mutex::new(NormalizedPoint::CENTER),
+            });
+
+            // Store in global for hook callbacks
+            let _ = HOOK_STATE.set(state.clone());
+
+            // Hook thread: installs low-level hooks and runs message loop
+            let state_hook = state.clone();
+            self.hook_thread = Some(std::thread::spawn(move || {
+                unsafe {
+                    let mouse_hook = SetWindowsHookExW(
+                        WH_MOUSE_LL,
+                        Some(mouse_hook_proc),
+                        None,
+                        0,
+                    );
+
+                    let kb_hook = SetWindowsHookExW(
+                        WH_KEYBOARD_LL,
+                        Some(keyboard_hook_proc),
+                        None,
+                        0,
+                    );
+
+                    // Message loop (required for hooks to work)
+                    let mut msg = MSG::default();
+                    while !state_hook.should_stop.load(Ordering::Relaxed) {
+                        if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
+                            break;
+                        }
+                    }
+
+                    if let Ok(h) = mouse_hook {
+                        let _ = UnhookWindowsHookEx(h);
+                    }
+                    if let Ok(h) = kb_hook {
+                        let _ = UnhookWindowsHookEx(h);
+                    }
+                }
+            }));
+
+            // Poll thread: 60Hz mouse position sampling
+            let state_poll = state.clone();
+            self.poll_thread = Some(std::thread::spawn(move || {
+                let interval = std::time::Duration::from_micros(16_667); // ~60Hz
+                while !state_poll.should_stop.load(Ordering::Relaxed) {
+                    let time = elapsed(&state_poll);
+
+                    let mut point = ::windows::Win32::Foundation::POINT { x: 0, y: 0 };
+                    unsafe { let _ = GetCursorPos(&mut point); }
+
+                    let pos = normalize_point(&state_poll, point.x, point.y);
+
+                    // Compute velocity from last position
+                    let velocity = {
+                        let mut last = state_poll.last_position.lock().unwrap();
+                        let v = last.distance(&pos) * 60.0; // per second
+                        *last = pos;
+                        v
+                    };
+
+                    if let Ok(mut rec) = state_poll.recording.lock() {
+                        rec.positions.push(MousePositionSample {
+                            time,
+                            position: pos,
+                            velocity,
+                        });
+                    }
+
+                    std::thread::sleep(interval);
+                }
+            }));
+
             self.monitoring = true;
             Ok(())
         }
@@ -198,9 +433,35 @@ pub mod windows {
             if !self.monitoring {
                 return Err(InputError::NotMonitoring);
             }
-            // TODO: UnhookWindowsHookEx, stop timer
+
+            // Signal threads to stop
+            if let Some(state) = HOOK_STATE.get() {
+                state.should_stop.store(true, Ordering::Relaxed);
+            }
+
+            // Wait for threads
+            if let Some(h) = self.poll_thread.take() {
+                let _ = h.join();
+            }
+            // Post quit message to unblock GetMessageW
+            unsafe {
+                ::windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                    0, 0x0012 /* WM_QUIT */, WPARAM(0), LPARAM(0),
+                ).ok();
+            }
+            if let Some(h) = self.hook_thread.take() {
+                let _ = h.join();
+            }
+
+            // Extract recording
+            let recording = if let Some(state) = HOOK_STATE.get() {
+                std::mem::take(&mut *state.recording.lock().unwrap())
+            } else {
+                InputRecording::new()
+            };
+
             self.monitoring = false;
-            Ok(std::mem::take(&mut self.recording))
+            Ok(recording)
         }
 
         fn is_monitoring(&self) -> bool {
