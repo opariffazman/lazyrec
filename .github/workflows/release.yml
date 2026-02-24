@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  VCPKG_ROOT: C:\vcpkg
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -27,6 +30,18 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Install FFmpeg via vcpkg
+        run: |
+          vcpkg install ffmpeg[core,avcodec,avformat,avfilter,swscale,swresample]:x64-windows
+          vcpkg integrate install
+
+      - name: Set FFmpeg environment
+        run: |
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          echo "FFMPEG_DIR=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "C:\vcpkg\installed\x64-windows\bin" >> $env:GITHUB_PATH
 
       - name: Install frontend dependencies
         run: npm ci
