@@ -42,16 +42,28 @@ jobs:
           mkdir ffmpeg
           mv ffmpeg-*/* ffmpeg/
           echo "FFMPEG_DIR=${pwd}\ffmpeg" >> $env:GITHUB_ENV
-          echo "FFMPEG_INCLUDE_DIR=${pwd}\ffmpeg\include" >> $env:GITHUB_ENV
           echo "${pwd}\ffmpeg\bin" >> $env:GITHUB_PATH
 
-      - name: Verify FFmpeg setup
+      - name: Patch FFmpeg headers for ffmpeg-sys-next
         run: |
-          echo "FFMPEG_DIR=$env:FFMPEG_DIR"
-          echo "FFMPEG_INCLUDE_DIR=$env:FFMPEG_INCLUDE_DIR"
-          # Remove .pc files with hardcoded Unix paths that confuse bindgen
+          # FFmpeg 7+ removed avfft.h but ffmpeg-sys-next build.rs still
+          # includes it unconditionally. When missing, search_include() falls
+          # back to /usr/include/ (Unix path) which fails on Windows.
+          # Create stub headers so bindgen finds them at the correct path.
+          $headers = @(
+            "libavcodec/avfft.h",
+            "libavcodec/vorbis_parser.h"
+          )
+          foreach ($h in $headers) {
+            $path = "$env:FFMPEG_DIR\include\$h"
+            if (-not (Test-Path $path)) {
+              echo "Creating stub: $path"
+              New-Item -ItemType File -Path $path -Force | Out-Null
+            }
+          }
+          # Remove .pc files with hardcoded Unix paths
           Remove-Item -Recurse -Force "$env:FFMPEG_DIR\lib\pkgconfig" -ErrorAction SilentlyContinue
-          ls $env:FFMPEG_DIR\include\libavcodec\ | Select-Object -First 5
+          echo "FFMPEG_DIR=$env:FFMPEG_DIR"
           ffmpeg -version
 
       - name: Install frontend dependencies
