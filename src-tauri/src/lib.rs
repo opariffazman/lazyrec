@@ -57,9 +57,19 @@ fn get_recording_status(state: State<AppState>) -> RecordingStatus {
 }
 
 #[tauri::command]
-fn set_capture_target(target: core::capture::CaptureTarget, state: State<AppState>) -> Result<(), String> {
+fn set_capture_target(
+    target: core::capture::CaptureTarget,
+    width: Option<u32>,
+    height: Option<u32>,
+    state: State<AppState>,
+) -> Result<(), String> {
     let mut recorder = state.recorder.lock().unwrap();
     recorder.set_target(target);
+    if let (Some(w), Some(h)) = (width, height) {
+        if w > 0 && h > 0 {
+            recorder.set_capture_dimensions(w, h, 1.0);
+        }
+    }
     Ok(())
 }
 

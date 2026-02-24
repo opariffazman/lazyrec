@@ -48,6 +48,7 @@ pub struct RecordingResult {
     pub video_path: PathBuf,
     pub input_data: InputRecording,
     pub duration: f64,
+    pub frame_rate: f64,
     pub frame_count: u64,
     pub capture_meta: CaptureMeta,
 }
@@ -75,7 +76,7 @@ impl RecordingResult {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "recording_mouse.json".into()),
             pixel_size: self.capture_meta.size_pixel(),
-            frame_rate: 60.0,
+            frame_rate: self.frame_rate,
             duration: self.duration,
         };
 
@@ -399,6 +400,7 @@ impl RecordingCoordinator {
             video_path,
             input_data,
             duration,
+            frame_rate: self.capture_config.target_fps as f64,
             frame_count: self.frame_count,
             capture_meta,
         })

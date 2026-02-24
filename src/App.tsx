@@ -200,7 +200,11 @@ function RecordingScreen({
                 const displayId = parseInt(idxStr, 10) || 0;
                 target = { type: "display" as const, displayId };
               }
-              await invoke("set_capture_target", { target });
+              await invoke("set_capture_target", {
+                target,
+                width: source.width || null,
+                height: source.height || null,
+              });
             }
           }
           await invoke("start_recording");
