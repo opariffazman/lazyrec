@@ -312,6 +312,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
   const [duration] = useState(30);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [mousePositions, setMousePositions] = useState<MousePositionData[]>([]);
   const [selectedKeyframe, setSelectedKeyframe] = useState<{
     trackType: string;
@@ -405,6 +406,41 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const handleGenerate = async () => {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<{
+        transformCount: number;
+        rippleCount: number;
+        keystrokeCount: number;
+        cursorCount: number;
+      }>("generate_keyframes");
+
+      // Reload tracks from generated data — build local track state from counts
+      // The backend has updated the project timeline; reload mouse data for preview too
+      const positions = await invoke<MousePositionData[]>("load_mouse_data").catch(() => []);
+      if (positions && positions.length > 0) setMousePositions(positions);
+
+      // For now, show a summary and reset tracks to reflect that generation happened
+      // In a full implementation we'd fetch the timeline from the backend
+      console.log("Generated keyframes:", result);
+      alert(
+        `Generated keyframes:\n` +
+        `  Transform: ${result.transformCount}\n` +
+        `  Ripple: ${result.rippleCount}\n` +
+        `  Keystroke: ${result.keystrokeCount}\n` +
+        `  Cursor: ${result.cursorCount}`
+      );
+    } catch (err) {
+      console.error("Generate failed:", err);
+      alert(`Failed to generate keyframes: ${err}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const handleKeyframeSelect = (trackType: string, kf: Keyframe) => {
     setSelectedKeyframe({ trackType, keyframe: kf });
     setPlayheadTime(kf.time);
@@ -492,6 +528,13 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
           <span className="time-display">
             {formatTimecode(playheadTime)} / {formatTimecode(duration)}
           </span>
+          <button
+            className="generate-btn"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+          >
+            {isGenerating ? "Generating..." : "Generate"}
+          </button>
           <button
             className="export-btn"
             onClick={handleExport}

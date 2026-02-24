@@ -860,6 +860,29 @@
    Export Button & Progress
    ========================================================================== */
 
+.generate-btn {
+  padding: 6px 16px;
+  background: #50c878;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: 8px;
+}
+
+.generate-btn:hover:not(:disabled) {
+  background: #3daa5f;
+}
+
+.generate-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .export-btn {
   padding: 6px 16px;
   background: #4a90d9;

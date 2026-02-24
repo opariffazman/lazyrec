@@ -125,48 +125,53 @@ fn stop_recording(state: State<AppState>) -> Result<ProjectInfo, String> {
 
 #[tauri::command]
 fn start_export(state: State<AppState>) -> Result<String, String> {
-    use core::coordinates::NormalizedPoint;
-    use core::evaluator::MousePosition;
-    use core::project::{CaptureMeta, MediaAsset, Project, Rect, Size};
-    use core::render::{ExportEngine, create_video_source};
+    use core::render::{ExportEngine, create_video_source_from_file};
 
-    let output_dir = dirs::video_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Videos"))
-        .join("LazyRec");
+    let current = state.current_project.lock().unwrap();
+    let loaded = current.as_ref().ok_or("No project loaded. Record or open a project first.")?;
+    let project = &loaded.project;
 
-    std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+    // Output path: same directory as the package, timestamped
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let output_dir = loaded.package_dir.parent()
+        .unwrap_or(std::path::Path::new("."));
+    let output_path = output_dir.join(format!("export_{timestamp}.mp4"));
 
-    let output_path = output_dir.join("export.mp4");
-
-    // Create a demo project for export (in production, this comes from the editor state)
-    let media = MediaAsset {
-        video_relative_path: "recording.mp4".into(),
-        mouse_data_relative_path: "recording_mouse.json".into(),
-        pixel_size: Size::new(1920.0, 1080.0),
-        frame_rate: 30.0,
-        duration: 3.0,
-    };
-
-    let capture_meta = CaptureMeta::new(
-        Rect::new(0.0, 0.0, 1920.0, 1080.0),
-        1.0,
+    // Create video source from the project's video file (falls back to stub)
+    let video_path = project.video_path(&loaded.package_dir);
+    let source = create_video_source_from_file(
+        &video_path,
+        project.media.pixel_size.width as u32,
+        project.media.pixel_size.height as u32,
+        project.duration(),
+        project.media.frame_rate,
     );
 
-    let project = Project::new("Export".into(), media, capture_meta);
-
-    let source = create_video_source(1920, 1080, 3.0, 30.0);
-    let mouse_positions = vec![
-        MousePosition { time: 0.0, position: NormalizedPoint::new(0.3, 0.4) },
-        MousePosition { time: 1.5, position: NormalizedPoint::new(0.6, 0.5) },
-        MousePosition { time: 3.0, position: NormalizedPoint::new(0.7, 0.6) },
-    ];
+    // Load mouse positions for the evaluator
+    let mouse_positions = {
+        let mouse_path = project.mouse_data_path(&loaded.package_dir);
+        if mouse_path.exists() {
+            let json = std::fs::read_to_string(&mouse_path).unwrap_or_default();
+            core::input::InputRecording::from_json(&json)
+                .map(|r| input_to_evaluator_positions(&r))
+                .unwrap_or_default()
+        } else {
+            vec![]
+        }
+    };
 
     let mut engine = ExportEngine::from_project(
-        &project,
+        project,
         source,
         mouse_positions,
         output_path,
     );
+
+    // Release the lock before the long export operation
+    drop(current);
 
     let progress_state = state.export_progress.clone();
     let result = engine.export(move |progress| {
@@ -176,7 +181,11 @@ fn start_export(state: State<AppState>) -> Result<String, String> {
     });
 
     match result {
-        Ok(path) => Ok(format!("Export complete: {}", path.display())),
+        Ok(path) => {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let size_mb = size as f64 / (1024.0 * 1024.0);
+            Ok(format!("Export complete: {} ({:.1} MB)", path.display(), size_mb))
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -256,6 +265,143 @@ fn load_mouse_data(state: State<AppState>) -> Result<Vec<MousePositionData>, Str
     }).collect();
 
     Ok(positions)
+}
+
+/// Convert InputRecording to generator MouseData format
+fn input_to_mouse_data(recording: &core::input::InputRecording, duration: f64) -> core::generators::MouseData {
+    use core::generators::*;
+    use core::input::MouseButton;
+
+    let positions: Vec<(f64, core::coordinates::NormalizedPoint)> = recording
+        .positions.iter().map(|p| (p.time, p.position)).collect();
+
+    let clicks: Vec<ClickEvent> = recording.clicks.iter().map(|c| {
+        let click_type = match c.button {
+            MouseButton::Left => ClickType::LeftDown,
+            MouseButton::Right => ClickType::RightDown,
+            MouseButton::Middle => ClickType::LeftDown, // treat middle as left for generators
+        };
+        ClickEvent {
+            time: c.time,
+            position: c.position,
+            click_type,
+            duration: c.duration,
+        }
+    }).collect();
+
+    let keyboard_events: Vec<KeyboardEvent> = recording.keyboard.iter().map(|k| {
+        KeyboardEvent {
+            time: k.time,
+            event_type: match k.event_type {
+                core::input::KeyAction::Down => KeyEventType::KeyDown,
+                core::input::KeyAction::Up => KeyEventType::KeyUp,
+            },
+            key_code: k.key_code,
+            character: k.character.clone(),
+            modifiers: Modifiers {
+                command: k.modifiers.command,
+                shift: k.modifiers.shift,
+                alt: k.modifiers.alt,
+                control: k.modifiers.control,
+            },
+        }
+    }).collect();
+
+    let drags: Vec<DragEvent> = recording.drags.iter().map(|d| {
+        DragEvent {
+            start_time: d.start_time,
+            end_time: d.end_time,
+            start_position: d.start_position,
+            end_position: d.end_position,
+        }
+    }).collect();
+
+    MouseData {
+        positions,
+        clicks,
+        keyboard_events,
+        drags,
+        duration,
+    }
+}
+
+/// Convert InputRecording positions to evaluator MousePosition format
+fn input_to_evaluator_positions(recording: &core::input::InputRecording) -> Vec<core::evaluator::MousePosition> {
+    recording.positions.iter().map(|p| {
+        core::evaluator::MousePosition {
+            time: p.time,
+            position: p.position,
+        }
+    }).collect()
+}
+
+/// Generated keyframes result returned to the frontend
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedKeyframes {
+    transform_count: usize,
+    ripple_count: usize,
+    cursor_count: usize,
+    keystroke_count: usize,
+    total: usize,
+}
+
+/// Run auto-generators on the current project's mouse/keyboard data.
+/// Replaces the project's timeline tracks with generated keyframes.
+#[tauri::command]
+fn generate_keyframes(state: State<AppState>) -> Result<GeneratedKeyframes, String> {
+    use core::generators::*;
+    use core::track::AnyTrack;
+
+    let mut current = state.current_project.lock().unwrap();
+    let loaded = current.as_mut().ok_or("No project loaded")?;
+
+    // Load mouse data
+    let mouse_path = loaded.project.mouse_data_path(&loaded.package_dir);
+    let recording = if mouse_path.exists() {
+        let json = std::fs::read_to_string(&mouse_path).map_err(|e| e.to_string())?;
+        core::input::InputRecording::from_json(&json).map_err(|e| e.to_string())?
+    } else {
+        return Err("No mouse data found in project".into());
+    };
+
+    let duration = loaded.project.duration();
+    let mouse_data = input_to_mouse_data(&recording, duration);
+
+    // Run generators
+    let zoom_settings = SmartZoomSettings::default();
+    let ripple_settings = RippleSettings::default();
+    let keystroke_settings = KeystrokeSettings::default();
+
+    let transform_track = generate_smart_zoom(&mouse_data, &zoom_settings);
+    let ripple_track = generate_ripples(&mouse_data.clicks, &ripple_settings);
+    let keystroke_track = generate_keystrokes(&mouse_data.keyboard_events, &keystroke_settings);
+    let cursor_track = generate_cursor_keyframes(&mouse_data.positions, &mouse_data.clicks);
+
+    let result = GeneratedKeyframes {
+        transform_count: transform_track.keyframe_count(),
+        ripple_count: ripple_track.keyframe_count(),
+        cursor_count: cursor_track.style_keyframes.as_ref().map_or(0, |v| v.len()),
+        keystroke_count: keystroke_track.keyframe_count(),
+        total: transform_track.keyframe_count()
+            + ripple_track.keyframe_count()
+            + cursor_track.style_keyframes.as_ref().map_or(0, |v| v.len())
+            + keystroke_track.keyframe_count(),
+    };
+
+    // Replace tracks in the project timeline
+    loaded.project.timeline.tracks = vec![
+        AnyTrack::Transform(transform_track),
+        AnyTrack::Ripple(ripple_track),
+        AnyTrack::Cursor(cursor_track),
+        AnyTrack::Keystroke(keystroke_track),
+    ];
+
+    // Auto-save the updated project
+    loaded.project.save(&loaded.package_dir, None, None)
+        .map_err(|e| e.to_string())?;
+
+    Ok(result)
 }
 
 /// Get the currently loaded project info.
@@ -349,6 +495,7 @@ pub fn run() {
             load_project,
             get_current_project,
             load_mouse_data,
+            generate_keyframes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
