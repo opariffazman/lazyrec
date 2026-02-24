@@ -1,0 +1,48 @@
+# Reference repo (cloned for study, not our code)
+_reference/
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node / Frontend (Tauri uses web frontend)
+node_modules/
+dist/
+.output/
+.nuxt/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# FFmpeg build artifacts
+ffmpeg-build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
