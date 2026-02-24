@@ -1,4 +1,4 @@
-# LazyRec v0.3.1 — Manual Test Checklist
+# LazyRec v0.3.2 — Manual Test Checklist
 
 Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
 
@@ -39,7 +39,7 @@ Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the Git
 - [ ] **Stop** button transitions to the Post-Recording screen
 - [ ] Elapsed time is consistent after multiple pause/resume cycles
 
-## 4. Post-Recording Screen (NEW in v0.3.1)
+## 4. Post-Recording Screen (NEW in v0.3.2)
 
 - [ ] "Recording Complete" header and back button visible
 - [ ] Two choice cards displayed: **Export with Auto-Zoom** (highlighted) and **Open in Editor**
@@ -140,7 +140,7 @@ Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the Git
 
 ## Notes
 
-- **v0.3.1 changes**: FFmpeg is now enabled by default. Recording produces real MP4 files (not stubs). Export applies actual zoom/pan effects. FFmpeg DLLs are bundled with the installer.
+- **v0.3.2 changes**: FFmpeg is now enabled by default. Recording produces real MP4 files (not stubs). Export applies actual zoom/pan effects. FFmpeg DLLs are bundled with the installer.
 - The recording backend uses real Windows capture via `windows-capture` and input hooks via `SetWindowsHookEx`.
 - The post-recording screen offers a streamlined "Export with Auto-Zoom" flow that skips the timeline editor entirely.
 - Inspector fields are read-only for now (display only, no editing).
