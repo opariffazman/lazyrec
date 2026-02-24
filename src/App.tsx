@@ -368,7 +368,44 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     { id: "t4", name: "Keystroke", type: "keystroke", keyframes: [] },
   ];
 
-  const [tracks, setTracks] = useState<Track[]>(defaultTracks);
+  const [tracks, setTracksRaw] = useState<Track[]>(defaultTracks);
+
+  // Undo/redo stack
+  const undoStackRef = useRef<Track[][]>([]);
+  const redoStackRef = useRef<Track[][]>([]);
+  const MAX_UNDO = 50;
+
+  const setTracks = useCallback((updater: Track[] | ((prev: Track[]) => Track[])) => {
+    setTracksRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      // Only push to undo if tracks actually changed
+      if (JSON.stringify(prev) !== JSON.stringify(next)) {
+        undoStackRef.current = [...undoStackRef.current.slice(-MAX_UNDO + 1), prev];
+        redoStackRef.current = []; // clear redo on new edit
+      }
+      return next;
+    });
+  }, []);
+
+  const undo = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+    setTracksRaw(prev => {
+      const snapshot = undoStackRef.current.pop()!;
+      redoStackRef.current.push(prev);
+      return snapshot;
+    });
+    setSelectedKeyframe(null);
+  }, []);
+
+  const redo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    setTracksRaw(prev => {
+      const snapshot = redoStackRef.current.pop()!;
+      undoStackRef.current.push(prev);
+      return snapshot;
+    });
+    setSelectedKeyframe(null);
+  }, []);
 
   // Load timeline and mouse data from the backend on mount
   const loadTimelineFromBackend = useCallback(async () => {
@@ -381,12 +418,16 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
       if (timeline) {
         setDuration(timeline.duration > 0 ? timeline.duration : 30);
         if (timeline.tracks.length > 0) {
-          setTracks(timeline.tracks.map(t => ({
+          // Use setTracksRaw to avoid polluting the undo stack on load
+          setTracksRaw(timeline.tracks.map(t => ({
             id: t.id,
             name: t.name,
             type: t.type as Track["type"],
             keyframes: t.keyframes,
           })));
+          // Reset undo/redo when loading fresh data
+          undoStackRef.current = [];
+          redoStackRef.current = [];
         }
       }
     } catch {
@@ -437,31 +478,47 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     };
   }, [isPlaying, duration]);
 
+  // Listen for export progress/completion/error events from the backend
+  useEffect(() => {
+    let unlistenProgress: (() => void) | null = null;
+    let unlistenComplete: (() => void) | null = null;
+    let unlistenError: (() => void) | null = null;
+
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlistenProgress = await listen<ExportProgress>("export-progress", (event) => {
+        setExportProgress(event.payload);
+      });
+      unlistenComplete = await listen<string>("export-complete", (event) => {
+        console.log("Export complete:", event.payload);
+        setExportProgress(prev => prev ? { ...prev, progress: 1, state: "completed" } : null);
+        setIsExporting(false);
+      });
+      unlistenError = await listen<string>("export-error", (event) => {
+        console.error("Export failed:", event.payload);
+        setExportProgress({ currentFrame: 0, totalFrames: 0, progress: 0, etaSeconds: 0, state: "failed" });
+        setIsExporting(false);
+      });
+    })();
+
+    return () => {
+      unlistenProgress?.();
+      unlistenComplete?.();
+      unlistenError?.();
+    };
+  }, []);
+
   const handleExport = async () => {
     if (isExporting) return;
     setIsExporting(true);
     setExportProgress(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const result = await invoke("start_export");
-      setExportProgress({
-        currentFrame: 0,
-        totalFrames: 0,
-        progress: 1,
-        etaSeconds: 0,
-        state: "completed",
-      });
-      console.log("Export result:", result);
+      await invoke("start_export");
+      // Export runs in background — progress comes via events
     } catch (err) {
-      console.error("Export failed:", err);
-      setExportProgress({
-        currentFrame: 0,
-        totalFrames: 0,
-        progress: 0,
-        etaSeconds: 0,
-        state: "failed",
-      });
-    } finally {
+      console.error("Export failed to start:", err);
+      setExportProgress({ currentFrame: 0, totalFrames: 0, progress: 0, etaSeconds: 0, state: "failed" });
       setIsExporting(false);
     }
   };
@@ -547,19 +604,33 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     });
   }, []);
 
-  // Delete key handler
+  // Keyboard shortcuts: Delete, Undo (Ctrl+Z), Redo (Ctrl+Shift+Z / Ctrl+Y)
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
+      const isInput = (e.target as HTMLElement).tagName === "INPUT" ||
+                      (e.target as HTMLElement).tagName === "SELECT";
+
+      // Undo/redo work even in inputs
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "Z" || e.key === "y")) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      if (isInput) return;
+
       if (e.key === "Delete" || e.key === "Backspace") {
-        // Don't delete if user is typing in an input
-        if ((e.target as HTMLElement).tagName === "INPUT" ||
-            (e.target as HTMLElement).tagName === "SELECT") return;
         handleDeleteKeyframe();
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [handleDeleteKeyframe]);
+  }, [handleDeleteKeyframe, undo, redo]);
 
   return (
     <div className="editor-screen">
@@ -605,7 +676,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
                 ? "Export complete"
                 : exportProgress.state === "failed"
                 ? "Export failed"
-                : `Exporting... ${Math.round(exportProgress.progress * 100)}%`}
+                : `Exporting ${exportProgress.currentFrame}/${exportProgress.totalFrames} — ${Math.round(exportProgress.progress * 100)}%${exportProgress.etaSeconds > 0 ? ` (${Math.ceil(exportProgress.etaSeconds)}s left)` : ""}`}
             </span>
           </div>
         )}
@@ -630,6 +701,9 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
                 selectedId={selectedKeyframe?.keyframe.id}
                 onSelectKeyframe={(kf) => handleKeyframeSelect(track.type, kf)}
                 onAddKeyframe={() => handleAddKeyframe(track.id)}
+                onMoveKeyframe={(kfId, newTime) => {
+                  handleUpdateKeyframe(kfId, "time", newTime);
+                }}
               />
             ))}
           </div>
@@ -1148,6 +1222,7 @@ function TimelineTrack({
   selectedId,
   onSelectKeyframe,
   onAddKeyframe,
+  onMoveKeyframe,
 }: {
   track: Track;
   duration: number;
@@ -1155,15 +1230,41 @@ function TimelineTrack({
   selectedId?: string;
   onSelectKeyframe?: (kf: Keyframe) => void;
   onAddKeyframe?: () => void;
+  onMoveKeyframe?: (keyframeId: string, newTime: number) => void;
 }) {
   const color = TRACK_COLORS[track.type] || "#888";
+  const laneRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ kfId: string; startX: number } | null>(null);
+
+  const handleMouseDown = (e: React.MouseEvent, kf: Keyframe) => {
+    e.stopPropagation();
+    onSelectKeyframe?.(kf);
+    dragRef.current = { kfId: kf.id, startX: e.clientX };
+
+    const handleMouseMove = (me: MouseEvent) => {
+      if (!dragRef.current || !laneRef.current) return;
+      const rect = laneRef.current.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (me.clientX - rect.left) / rect.width));
+      const newTime = Math.round(ratio * duration * 100) / 100; // snap to 10ms
+      onMoveKeyframe?.(dragRef.current.kfId, newTime);
+    };
+
+    const handleMouseUp = () => {
+      dragRef.current = null;
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
 
   return (
     <div className="timeline-track">
       <div className="track-label" style={{ borderLeftColor: color }}>
         {track.name}
       </div>
-      <div className="track-lane" onDoubleClick={() => onAddKeyframe?.()}>
+      <div className="track-lane" ref={laneRef} onDoubleClick={() => onAddKeyframe?.()}>
         {track.keyframes.map(kf => (
           <div
             key={kf.id}
@@ -1173,7 +1274,7 @@ function TimelineTrack({
               backgroundColor: color,
             }}
             title={`${track.name} @ ${formatTimecode(kf.time)}`}
-            onClick={() => onSelectKeyframe?.(kf)}
+            onMouseDown={(e) => handleMouseDown(e, kf)}
           />
         ))}
         <div

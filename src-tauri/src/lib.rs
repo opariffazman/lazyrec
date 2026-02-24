@@ -3,7 +3,7 @@ pub mod core;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use core::capture::create_capture;
 use core::permissions::{create_permissions_manager, PermissionReport};
@@ -130,71 +130,83 @@ fn stop_recording(state: State<AppState>) -> Result<ProjectInfo, String> {
     Ok(info)
 }
 
+/// Start export on a background thread. Progress is streamed via "export-progress" events.
+/// Returns immediately with "ok" or an error if no project is loaded.
 #[tauri::command]
-fn start_export(state: State<AppState>) -> Result<String, String> {
+fn start_export(app: AppHandle, state: State<AppState>) -> Result<String, String> {
     use core::render::{ExportEngine, create_video_source_from_file};
 
     let current = state.current_project.lock().unwrap();
     let loaded = current.as_ref().ok_or("No project loaded. Record or open a project first.")?;
-    let project = &loaded.project;
 
-    // Output path: same directory as the package, timestamped
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let output_dir = loaded.package_dir.parent()
-        .unwrap_or(std::path::Path::new("."));
-    let output_path = output_dir.join(format!("export_{timestamp}.mp4"));
-
-    // Create video source from the project's video file (falls back to stub)
-    let video_path = project.video_path(&loaded.package_dir);
-    let source = create_video_source_from_file(
-        &video_path,
-        project.media.pixel_size.width as u32,
-        project.media.pixel_size.height as u32,
-        project.duration(),
-        project.media.frame_rate,
-    );
-
-    // Load mouse positions for the evaluator
-    let mouse_positions = {
-        let mouse_path = project.mouse_data_path(&loaded.package_dir);
-        if mouse_path.exists() {
-            let json = std::fs::read_to_string(&mouse_path).unwrap_or_default();
-            core::input::InputRecording::from_json(&json)
-                .map(|r| input_to_evaluator_positions(&r))
-                .unwrap_or_default()
-        } else {
-            vec![]
-        }
-    };
-
-    let mut engine = ExportEngine::from_project(
-        project,
-        source,
-        mouse_positions,
-        output_path,
-    );
-
-    // Release the lock before the long export operation
+    // Clone everything we need before dropping the lock
+    let project = loaded.project.clone();
+    let package_dir = loaded.package_dir.clone();
     drop(current);
 
     let progress_state = state.export_progress.clone();
-    let result = engine.export(move |progress| {
-        if let Ok(mut p) = progress_state.lock() {
-            *p = Some(progress);
+
+    std::thread::spawn(move || {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let output_dir = package_dir.parent()
+            .unwrap_or(std::path::Path::new("."));
+        let output_path = output_dir.join(format!("export_{timestamp}.mp4"));
+
+        let video_path = project.video_path(&package_dir);
+        let source = create_video_source_from_file(
+            &video_path,
+            project.media.pixel_size.width as u32,
+            project.media.pixel_size.height as u32,
+            project.duration(),
+            project.media.frame_rate,
+        );
+
+        let mouse_positions = {
+            let mouse_path = project.mouse_data_path(&package_dir);
+            if mouse_path.exists() {
+                let json = std::fs::read_to_string(&mouse_path).unwrap_or_default();
+                core::input::InputRecording::from_json(&json)
+                    .map(|r| input_to_evaluator_positions(&r))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        };
+
+        let mut engine = ExportEngine::from_project(
+            &project,
+            source,
+            mouse_positions,
+            output_path,
+        );
+
+        let app_handle = app.clone();
+        let ps = progress_state.clone();
+        let result = engine.export(move |progress| {
+            if let Ok(mut p) = ps.lock() {
+                *p = Some(progress.clone());
+            }
+            let _ = app_handle.emit("export-progress", &progress);
+        });
+
+        // Emit final result event
+        match result {
+            Ok(path) => {
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let size_mb = size as f64 / (1024.0 * 1024.0);
+                let msg = format!("Export complete: {} ({:.1} MB)", path.display(), size_mb);
+                let _ = app.emit("export-complete", &msg);
+            }
+            Err(e) => {
+                let _ = app.emit("export-error", &e.to_string());
+            }
         }
     });
 
-    match result {
-        Ok(path) => {
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            let size_mb = size as f64 / (1024.0 * 1024.0);
-            Ok(format!("Export complete: {} ({:.1} MB)", path.display(), size_mb))
-        }
-        Err(e) => Err(e.to_string()),
-    }
+    Ok("Export started".into())
 }
 
 #[tauri::command]
