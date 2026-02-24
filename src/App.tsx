@@ -251,10 +251,20 @@ interface Keyframe {
 
 type InspectorTab = "properties" | "settings";
 
+interface ExportProgress {
+  currentFrame: number;
+  totalFrames: number;
+  progress: number;
+  etaSeconds: number;
+  state: string;
+}
+
 function EditorScreen({ onBack }: { onBack: () => void }) {
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration] = useState(30);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [selectedKeyframe, setSelectedKeyframe] = useState<{
     trackType: string;
     keyframe: Keyframe;
@@ -303,6 +313,35 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     };
   }, [isPlaying, duration]);
 
+  const handleExport = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportProgress(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke("start_export");
+      setExportProgress({
+        currentFrame: 0,
+        totalFrames: 0,
+        progress: 1,
+        etaSeconds: 0,
+        state: "completed",
+      });
+      console.log("Export result:", result);
+    } catch (err) {
+      console.error("Export failed:", err);
+      setExportProgress({
+        currentFrame: 0,
+        totalFrames: 0,
+        progress: 0,
+        etaSeconds: 0,
+        state: "failed",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const handleKeyframeSelect = (trackType: string, kf: Keyframe) => {
     setSelectedKeyframe({ trackType, keyframe: kf });
     setPlayheadTime(kf.time);
@@ -326,10 +365,29 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
           <span className="time-display">
             {formatTimecode(playheadTime)} / {formatTimecode(duration)}
           </span>
+          <button
+            className="export-btn"
+            onClick={handleExport}
+            disabled={isExporting}
+          >
+            {isExporting ? "Exporting..." : "Export"}
+          </button>
         </div>
       </div>
 
       <div className="editor-body">
+        {exportProgress && (
+          <div className="export-progress-bar">
+            <div className="export-progress-fill" style={{ width: `${exportProgress.progress * 100}%` }} />
+            <span className="export-progress-text">
+              {exportProgress.state === "completed"
+                ? "Export complete"
+                : exportProgress.state === "failed"
+                ? "Export failed"
+                : `Exporting... ${Math.round(exportProgress.progress * 100)}%`}
+            </span>
+          </div>
+        )}
         <div className="editor-main">
           <VideoPreview playheadTime={playheadTime} duration={duration} />
           <InspectorPanel selection={selectedKeyframe} />

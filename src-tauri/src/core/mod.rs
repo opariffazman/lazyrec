@@ -9,5 +9,6 @@ pub mod keyframe;
 pub mod permissions;
 pub mod project;
 pub mod recorder;
+pub mod render;
 pub mod timeline;
 pub mod track;

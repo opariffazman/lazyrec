@@ -830,3 +830,60 @@
   flex-direction: column;
   gap: 8px;
 }
+
+/* ==========================================================================
+   Export Button & Progress
+   ========================================================================== */
+
+.export-btn {
+  padding: 6px 16px;
+  background: #4a90d9;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: 8px;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: #3a7bc8;
+}
+
+.export-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.export-progress-bar {
+  position: relative;
+  height: 24px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a3e;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.export-progress-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #4a90d9, #50c878);
+  transition: width 0.3s ease-out;
+}
+
+.export-progress-text {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e0e0e0;
+  z-index: 1;
+}
