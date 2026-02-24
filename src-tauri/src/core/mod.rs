@@ -1,6 +1,12 @@
+pub mod capture;
 pub mod coordinates;
 pub mod easing;
+pub mod encoder;
+pub mod evaluator;
+pub mod generators;
+pub mod input;
 pub mod keyframe;
+pub mod permissions;
 pub mod project;
 pub mod timeline;
 pub mod track;
