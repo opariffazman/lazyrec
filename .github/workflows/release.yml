@@ -8,12 +8,12 @@ on:
 permissions:
   contents: write
 
-env:
-  VCPKG_ROOT: C:\vcpkg
-
 jobs:
   build-windows:
     runs-on: windows-latest
+
+    env:
+      FFMPEG_DOWNLOAD_URL: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z
 
     steps:
       - uses: actions/checkout@v4
@@ -33,31 +33,16 @@ jobs:
           workspaces: "src-tauri -> target"
           cache-on-failure: true
 
-      - name: Cache vcpkg installed packages
-        id: vcpkg-cache
-        uses: actions/cache@v4
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-ffmpeg-x64-windows-${{ hashFiles('src-tauri/Cargo.toml') }}
-          restore-keys: |
-            vcpkg-ffmpeg-x64-windows-
-
-      - name: Install FFmpeg via vcpkg
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+      - name: Install FFmpeg (pre-built shared)
         run: |
-          vcpkg install ffmpeg[core,avcodec,avformat,avfilter,swscale,swresample]:x64-windows
-          vcpkg integrate install
-
-      - name: vcpkg integrate (cached)
-        if: steps.vcpkg-cache.outputs.cache-hit == 'true'
-        run: vcpkg integrate install
-
-      - name: Set FFmpeg environment
-        run: |
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
-          echo "FFMPEG_DIR=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
-          echo "PKG_CONFIG_PATH=C:\vcpkg\installed\x64-windows\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "C:\vcpkg\installed\x64-windows\bin" >> $env:GITHUB_PATH
+          $VCINSTALLDIR = $(& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath)
+          Add-Content $env:GITHUB_ENV "LIBCLANG_PATH=${VCINSTALLDIR}\VC\Tools\LLVM\x64\bin`n"
+          Invoke-WebRequest "${env:FFMPEG_DOWNLOAD_URL}" -OutFile ffmpeg-release-full-shared.7z
+          7z x ffmpeg-release-full-shared.7z
+          mkdir ffmpeg
+          mv ffmpeg-*/* ffmpeg/
+          Add-Content $env:GITHUB_ENV "FFMPEG_DIR=${pwd}\ffmpeg`n"
+          Add-Content $env:GITHUB_PATH "${pwd}\ffmpeg\bin`n"
 
       - name: Install frontend dependencies
         run: npm ci
