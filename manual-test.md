@@ -1,6 +1,6 @@
-# LazyRec v0.2.0 — Manual Test Checklist
+# LazyRec v0.3.0 — Manual Test Checklist
 
-Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
+Run the Windows installer (`LazyRec_0.3.0_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
 
 ---
 
@@ -27,9 +27,10 @@ Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the Git
 
 - [ ] "Recording" header and back button visible
 - [ ] Back button returns to the Welcome screen
-- [ ] Source selector dropdown shows "Entire Screen" and "Window..."
-- [ ] Clicking **Start Recording** shows a 3-second countdown (3 → 2 → 1)
-- [ ] Countdown numbers pulse with animation
+- [ ] Source selector dropdown populates with real display/window names on load
+- [ ] Selecting a different source updates the displayed name and dimensions
+- [ ] Clicking **Start Recording** calls `set_capture_target` before starting
+- [ ] 3-second countdown appears (3 → 2 → 1) with pulse animation
 - [ ] After countdown, state changes to "REC" with blinking red dot
 - [ ] Timer counts up in `MM:SS` format
 - [ ] **Pause** button changes label to "PAUSED", dot stops blinking, timer freezes
@@ -39,9 +40,9 @@ Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the Git
 
 ## 4. Editor Screen — Layout
 
-- [ ] Header shows: back button, "Timeline Editor" title, transport controls, export button
+- [ ] Header shows: back button, "Timeline Editor" title, **Generate** button, transport controls, export button
 - [ ] Main area is split: video preview (left) and inspector panel (right)
-- [ ] Timeline panel at bottom with ruler and 4 tracks
+- [ ] Timeline panel at bottom with ruler, zoom controls, and 4 tracks
 - [ ] Overall layout fills the window without scrollbars on the main area
 
 ## 5. Editor Screen — Transport Controls
@@ -59,6 +60,7 @@ Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the Git
 - [ ] White cursor dot visible, moves smoothly with playhead
 - [ ] Viewport shrinks as playhead advances (simulated zoom-in)
 - [ ] Timecode overlay in the bottom-right of the preview
+- [ ] When a project is loaded, preview uses the actual project video frames
 
 ## 7. Editor Screen — Timeline
 
@@ -73,7 +75,40 @@ Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the Git
 - [ ] Clicking a keyframe navigates playhead to that keyframe's time
 - [ ] Playhead line in tracks moves during playback
 
-## 8. Editor Screen — Inspector Panel (Properties Tab)
+### 7a. Timeline — Keyframe Dragging
+
+- [ ] Clicking and dragging a keyframe marker moves it along the time axis
+- [ ] Cursor changes to grab/grabbing during drag
+- [ ] Keyframe snaps to 10ms intervals while dragging
+- [ ] Dragging clamps to timeline bounds (0 to duration)
+- [ ] Releasing the mouse finalizes the keyframe's new position
+
+### 7b. Timeline — Zoom & Scale
+
+- [ ] Zoom slider visible in the timeline zoom bar
+- [ ] Dragging the zoom slider scales the timeline width (1x–20x)
+- [ ] Ctrl+scroll wheel zooms in/out on the timeline
+- [ ] Zoom label shows the current zoom level (e.g., "1.0x")
+- [ ] Reset button ("1x") resets zoom to default
+- [ ] Horizontal scrollbar appears when zoomed beyond viewport width
+- [ ] Keyframe positions remain accurate at all zoom levels
+
+## 8. Editor Screen — Generate Keyframes
+
+- [ ] Green **Generate** button visible in the toolbar
+- [ ] Clicking Generate calls the backend `generate_keyframes` command
+- [ ] Timeline tracks refresh with auto-generated keyframes after generation
+- [ ] Duration updates from the backend if a project is loaded
+
+## 9. Editor Screen — Undo/Redo
+
+- [ ] Ctrl+Z undoes the last timeline change (keyframe move, generation, etc.)
+- [ ] Ctrl+Shift+Z or Ctrl+Y redoes the undone change
+- [ ] Undo stack holds up to 50 snapshots
+- [ ] Loading from backend (via Generate or project load) clears the undo stack
+- [ ] Undo/redo does not affect raw backend loads
+
+## 10. Editor Screen — Inspector Panel (Properties Tab)
 
 - [ ] When no keyframe selected: shows diamond icon + "Select a keyframe to inspect"
 - [ ] After selecting a **Transform** keyframe: shows Zoom, Center X, Center Y, Easing
@@ -85,34 +120,41 @@ Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the Git
 - [ ] Easing presets row (linear, easeIn, easeOut, easeInOut, spring)
 - [ ] Active easing button highlighted in blue
 
-## 9. Editor Screen — Inspector Panel (Settings Tab)
+## 11. Editor Screen — Inspector Panel (Settings Tab)
 
 - [ ] Clicking "Settings" tab switches to render settings
 - [ ] **Output** section: Resolution, Codec, Quality, Frame Rate dropdowns visible
+- [ ] Settings load from backend on mount (not hardcoded defaults)
+- [ ] Changing any setting saves to backend immediately
 - [ ] Resolution options: Original, 4K, 1440p, 1080p, 720p
 - [ ] Codec options: H.265 (HEVC), H.264
 - [ ] Quality options: High, Medium, Low, Original
 - [ ] Frame Rate options: Original, 60 fps, 30 fps
 - [ ] **Window Mode** section: Background checkbox, Corner Radius, Shadow fields
+- [ ] Corner Radius slider/input updates value (0–50)
+- [ ] Shadow Opacity slider/input updates value (0–100)
 - [ ] Switching back to "Properties" tab restores previous selection
 
-## 10. Editor Screen — Export
+## 12. Editor Screen — Export (Async with Progress)
 
 - [ ] **Export** button visible in the transport bar
-- [ ] Clicking Export starts the export process
+- [ ] Clicking Export starts the export process asynchronously
 - [ ] Button text changes to "Exporting..." and becomes disabled
 - [ ] Progress bar appears below the header with gradient fill (blue → green)
-- [ ] Progress text shows percentage or "Export complete" / "Export failed"
-- [ ] After completion, button re-enables
+- [ ] Progress text shows frame count, percentage, and ETA
+- [ ] Progress updates in real time via Tauri event stream
+- [ ] On completion, "Export complete" message and path displayed
+- [ ] On failure, "Export failed" message with error displayed
+- [ ] After completion/failure, button re-enables
 - [ ] Check `Videos/LazyRec/export.mp4` was created on disk
 
-## 11. Window Behavior
+## 13. Window Behavior
 
 - [ ] Window is resizable
 - [ ] Layout adapts to smaller window sizes (no overlapping elements)
 - [ ] Closing the window exits the app cleanly (no zombie processes)
 
-## 12. Dark Theme & Visuals
+## 14. Dark Theme & Visuals
 
 - [ ] All screens use dark background (#0f0f23)
 - [ ] Text is readable (light on dark)
@@ -124,6 +166,7 @@ Run the Windows installer (`LazyRec_0.2.0_x64-setup.exe` or `.msi`) from the Git
 
 ## Notes
 
-- The recording backend uses platform stubs on this build — actual screen capture is not yet wired. Recording flow tests the UI state machine only.
-- Export uses a stub video source (generates gradient test frames) and stub encoder (no actual video output). The pipeline orchestration is real.
+- The recording backend uses real Windows capture/input hooks via `windows-capture` and `SetWindowsHookEx`. Capture sources enumerate real displays and windows. Actual frame recording requires the full pipeline (encoder writes stub output without FFmpeg).
+- Export uses a stub video source (gradient test frames) and stub encoder unless built with `--features ffmpeg`. The async progress pipeline and event streaming are real.
 - Inspector fields are read-only for now (display only, no editing).
+- Timeline tracks load from the Rust backend via `get_timeline` — no longer hardcoded seed data.
