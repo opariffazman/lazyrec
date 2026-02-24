@@ -300,16 +300,38 @@ interface ExportProgress {
   state: string;
 }
 
+interface MousePositionData {
+  time: number;
+  x: number;
+  y: number;
+}
+
 function EditorScreen({ onBack }: { onBack: () => void }) {
   const [playheadTime, setPlayheadTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration] = useState(30);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [mousePositions, setMousePositions] = useState<MousePositionData[]>([]);
   const [selectedKeyframe, setSelectedKeyframe] = useState<{
     trackType: string;
     keyframe: Keyframe;
   } | null>(null);
+
+  // Load mouse data from the backend when entering the editor
+  useEffect(() => {
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const positions = await invoke<MousePositionData[]>("load_mouse_data");
+        if (positions && positions.length > 0) {
+          setMousePositions(positions);
+        }
+      } catch {
+        // No project loaded or no mouse data — use empty array (preview falls back to simulated)
+      }
+    })();
+  }, []);
   const [tracks, setTracks] = useState<Track[]>([
     { id: "t1", name: "Transform", type: "transform", keyframes: [
       { id: "k1", time: 2, zoom: 2.5, centerX: 0.3, centerY: 0.4, easing: "spring" },
@@ -494,7 +516,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
           </div>
         )}
         <div className="editor-main">
-          <VideoPreview playheadTime={playheadTime} duration={duration} />
+          <VideoPreview playheadTime={playheadTime} duration={duration} mousePositions={mousePositions} />
           <InspectorPanel selection={selectedKeyframe} onUpdateKeyframe={handleUpdateKeyframe} />
         </div>
 
@@ -533,12 +555,49 @@ interface FrameData {
   rgbaBase64: string;
 }
 
+/// Interpolate cursor position from mouse data at a given time.
+/// Falls back to simulated sine wave when no data is available.
+function interpolateCursor(
+  mousePositions: MousePositionData[],
+  time: number,
+  progress: number,
+): { x: number; y: number } {
+  if (mousePositions.length === 0) {
+    // Simulated fallback
+    return {
+      x: 30 + 40 * progress,
+      y: 40 + 20 * Math.sin(progress * Math.PI * 2),
+    };
+  }
+
+  // Binary search for bounding samples
+  let lo = 0, hi = mousePositions.length - 1;
+  if (time <= mousePositions[lo].time) return { x: mousePositions[lo].x * 100, y: mousePositions[lo].y * 100 };
+  if (time >= mousePositions[hi].time) return { x: mousePositions[hi].x * 100, y: mousePositions[hi].y * 100 };
+
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (mousePositions[mid].time <= time) lo = mid;
+    else hi = mid;
+  }
+
+  const a = mousePositions[lo];
+  const b = mousePositions[hi];
+  const t = b.time > a.time ? (time - a.time) / (b.time - a.time) : 0;
+  return {
+    x: (a.x + (b.x - a.x) * t) * 100,
+    y: (a.y + (b.y - a.y) * t) * 100,
+  };
+}
+
 function VideoPreview({
   playheadTime,
   duration,
+  mousePositions,
 }: {
   playheadTime: number;
   duration: number;
+  mousePositions: MousePositionData[];
 }) {
   const progress = duration > 0 ? playheadTime / duration : 0;
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -579,6 +638,8 @@ function VideoPreview({
     return () => { if (fetchTimer.current) clearTimeout(fetchTimer.current); };
   }, [playheadTime]);
 
+  const cursor = interpolateCursor(mousePositions, playheadTime, progress);
+
   return (
     <div className="preview-area">
       <div className="video-preview">
@@ -595,8 +656,8 @@ function VideoPreview({
             }}
           />
           <div className="preview-cursor" style={{
-            left: `${30 + 40 * progress}%`,
-            top: `${40 + 20 * Math.sin(progress * Math.PI * 2)}%`,
+            left: `${cursor.x}%`,
+            top: `${cursor.y}%`,
           }} />
         </div>
         <div className="preview-overlay">

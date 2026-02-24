@@ -222,6 +222,42 @@ fn load_project(path: String, state: State<AppState>) -> Result<ProjectInfo, Str
     Ok(info)
 }
 
+/// Serializable mouse position for the frontend
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MousePositionData {
+    time: f64,
+    x: f64,
+    y: f64,
+}
+
+/// Load mouse data from the current project.
+/// Returns mouse positions as normalized (0-1) coordinates.
+#[tauri::command]
+fn load_mouse_data(state: State<AppState>) -> Result<Vec<MousePositionData>, String> {
+    let current = state.current_project.lock().unwrap();
+    let loaded = current.as_ref().ok_or("No project loaded")?;
+
+    let mouse_path = loaded.project.mouse_data_path(&loaded.package_dir);
+    if !mouse_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let json = std::fs::read_to_string(&mouse_path).map_err(|e| e.to_string())?;
+    let recording = core::input::InputRecording::from_json(&json)
+        .map_err(|e| e.to_string())?;
+
+    let positions: Vec<MousePositionData> = recording.positions.iter().map(|p| {
+        MousePositionData {
+            time: p.time,
+            x: p.position.x,
+            y: p.position.y,
+        }
+    }).collect();
+
+    Ok(positions)
+}
+
 /// Get the currently loaded project info.
 #[tauri::command]
 fn get_current_project(state: State<AppState>) -> Option<ProjectInfo> {
@@ -312,6 +348,7 @@ pub fn run() {
             save_project,
             load_project,
             get_current_project,
+            load_mouse_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
