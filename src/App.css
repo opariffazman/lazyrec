@@ -306,6 +306,22 @@
   color: #fff;
 }
 
+.recording-frame-count {
+  font-size: 14px;
+  color: #888;
+  margin-top: -8px;
+  margin-bottom: 8px;
+}
+
+.recording-error {
+  background: rgba(233, 69, 96, 0.15);
+  color: #e94560;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
 .recording-controls {
   display: flex;
   gap: 12px;

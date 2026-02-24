@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -52,6 +54,94 @@ impl Project {
 
     /// Package extension for project directories
     pub const PACKAGE_EXTENSION: &'static str = "lazyrec";
+
+    /// Save project to a `.lazyrec` package directory.
+    ///
+    /// Package layout:
+    /// ```text
+    /// MyProject.lazyrec/
+    /// ├── project.json
+    /// └── recording/
+    ///     ├── recording.mp4
+    ///     └── recording_mouse.json
+    /// ```
+    ///
+    /// `video_source` and `mouse_source` are the original file paths to copy into the package.
+    /// If they already live inside the package directory, they are not re-copied.
+    pub fn save(
+        &mut self,
+        package_dir: &Path,
+        video_source: Option<&Path>,
+        mouse_source: Option<&Path>,
+    ) -> Result<PathBuf, ProjectError> {
+        // Create package directory structure
+        let recording_dir = package_dir.join("recording");
+        std::fs::create_dir_all(&recording_dir)?;
+
+        // Copy video file into package if provided and not already there
+        if let Some(src) = video_source {
+            let dst = recording_dir.join(&self.media.video_relative_path);
+            if src != dst && src.exists() {
+                std::fs::copy(src, &dst)?;
+            }
+        }
+
+        // Copy mouse data into package if provided and not already there
+        if let Some(src) = mouse_source {
+            let dst = recording_dir.join(&self.media.mouse_data_relative_path);
+            if src != dst && src.exists() {
+                std::fs::copy(src, &dst)?;
+            }
+        }
+
+        // Update modified timestamp
+        self.modified_at = chrono_now();
+
+        // Write project.json
+        let project_json = serde_json::to_string_pretty(self)
+            .map_err(|e| ProjectError::Serialization(e.to_string()))?;
+        let project_path = package_dir.join("project.json");
+        std::fs::write(&project_path, project_json)?;
+
+        Ok(package_dir.to_path_buf())
+    }
+
+    /// Load a project from a `.lazyrec` package directory.
+    pub fn load(package_dir: &Path) -> Result<Self, ProjectError> {
+        let project_path = package_dir.join("project.json");
+        if !project_path.exists() {
+            return Err(ProjectError::NotFound(
+                format!("project.json not found in {}", package_dir.display()),
+            ));
+        }
+
+        let json = std::fs::read_to_string(&project_path)?;
+        let project: Project = serde_json::from_str(&json)
+            .map_err(|e| ProjectError::Serialization(e.to_string()))?;
+
+        Ok(project)
+    }
+
+    /// Get the absolute path to the video file within a package directory
+    pub fn video_path(&self, package_dir: &Path) -> PathBuf {
+        package_dir.join("recording").join(&self.media.video_relative_path)
+    }
+
+    /// Get the absolute path to the mouse data file within a package directory
+    pub fn mouse_data_path(&self, package_dir: &Path) -> PathBuf {
+        package_dir.join("recording").join(&self.media.mouse_data_relative_path)
+    }
+}
+
+/// Project I/O errors
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
 
 fn chrono_now() -> String {

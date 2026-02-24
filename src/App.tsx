@@ -108,6 +108,12 @@ function WelcomeScreen({
 
 type RecordingState = "idle" | "countdown" | "recording" | "paused";
 
+interface RecordingStatusData {
+  state: string;
+  elapsed: number;
+  frameCount: number;
+}
+
 function RecordingScreen({
   onBack,
   onRecordingComplete,
@@ -117,57 +123,87 @@ function RecordingScreen({
 }) {
   const [state, setState] = useState<RecordingState>("idle");
   const [elapsed, setElapsed] = useState(0);
+  const [frameCount, setFrameCount] = useState(0);
   const [countdown, setCountdown] = useState(3);
-  const timerRef = useRef<number | null>(null);
-  const startTimeRef = useRef(0);
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<number | null>(null);
+
+  // Poll backend status while recording/paused
+  useEffect(() => {
+    if (state === "recording" || state === "paused") {
+      const poll = async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const status = await invoke<RecordingStatusData>("get_recording_status");
+          setElapsed(Math.floor(status.elapsed));
+          setFrameCount(status.frameCount);
+        } catch {
+          // Silently ignore poll errors
+        }
+      };
+      pollRef.current = window.setInterval(poll, 250);
+      poll(); // immediate first poll
+    } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [state]);
 
   const startCountdown = useCallback(() => {
     setState("countdown");
     setCountdown(3);
+    setError(null);
     let count = 3;
-    const interval = window.setInterval(() => {
+    const interval = window.setInterval(async () => {
       count--;
       if (count <= 0) {
         clearInterval(interval);
-        setState("recording");
-        startTimeRef.current = Date.now();
-        setElapsed(0);
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("start_recording");
+          setState("recording");
+          setElapsed(0);
+          setFrameCount(0);
+        } catch (err) {
+          setError(String(err));
+          setState("idle");
+        }
       } else {
         setCountdown(count);
       }
     }, 1000);
   }, []);
 
-  // Timer for elapsed recording time
-  useEffect(() => {
-    if (state === "recording") {
-      timerRef.current = window.setInterval(() => {
-        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
-      }, 200);
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+  const togglePause = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      if (state === "recording") {
+        await invoke("pause_recording");
+        setState("paused");
+      } else if (state === "paused") {
+        await invoke("resume_recording");
+        setState("recording");
       }
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [state]);
-
-  const togglePause = () => {
-    if (state === "recording") {
-      setState("paused");
-    } else if (state === "paused") {
-      setState("recording");
-      startTimeRef.current = Date.now() - elapsed * 1000;
+    } catch (err) {
+      setError(String(err));
     }
   };
 
-  const stopRecording = () => {
-    setState("idle");
-    setElapsed(0);
-    onRecordingComplete();
+  const stopRecording = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("stop_recording");
+      setState("idle");
+      setElapsed(0);
+      setFrameCount(0);
+      onRecordingComplete();
+    } catch (err) {
+      setError(String(err));
+      setState("idle");
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -186,6 +222,10 @@ function RecordingScreen({
       </div>
 
       <div className="recording-body">
+        {error && (
+          <div className="recording-error">{error}</div>
+        )}
+
         {state === "countdown" && (
           <div className="countdown-overlay">
             <span className="countdown-number">{countdown}</span>
@@ -216,6 +256,7 @@ function RecordingScreen({
             </div>
 
             <div className="recording-timer">{formatTime(elapsed)}</div>
+            <div className="recording-frame-count">{frameCount} frames</div>
 
             <div className="recording-controls">
               <button className="control-btn" onClick={togglePause}>

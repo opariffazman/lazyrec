@@ -1,5 +1,6 @@
 pub mod core;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tauri::State;
@@ -7,12 +8,34 @@ use tauri::State;
 use core::capture::create_capture;
 use core::permissions::{create_permissions_manager, PermissionReport};
 use core::capture::CaptureSource;
+use core::project::Project;
 use core::recorder::{RecordingCoordinator, RecordingStatus};
 use core::render::{ExportProgress, FrameBuffer};
 
 struct AppState {
     recorder: Mutex<RecordingCoordinator>,
     export_progress: Arc<Mutex<Option<ExportProgress>>>,
+    /// Currently loaded project (set after recording or opening a project)
+    current_project: Mutex<Option<LoadedProject>>,
+}
+
+/// A project loaded in the editor, with its package directory path.
+#[derive(Clone)]
+struct LoadedProject {
+    project: Project,
+    package_dir: PathBuf,
+}
+
+/// Serializable project info returned to the frontend
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectInfo {
+    name: String,
+    duration: f64,
+    frame_rate: f64,
+    width: f64,
+    height: f64,
+    package_path: String,
 }
 
 #[tauri::command]
@@ -52,23 +75,52 @@ fn resume_recording(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn stop_recording(state: State<AppState>) -> Result<String, String> {
+fn stop_recording(state: State<AppState>) -> Result<ProjectInfo, String> {
     let mut recorder = state.recorder.lock().unwrap();
     let result = recorder.stop().map_err(|e| e.to_string())?;
 
     // Save input data alongside video
     let mouse_path = result.save_input_data().map_err(|e| e.to_string())?;
 
+    // Create and save project package
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let package_name = format!("Recording_{timestamp}.lazyrec");
+    let package_dir = result.video_path.parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(&package_name);
+
+    let mut project = result.to_project(format!("Recording {timestamp}"));
+    project.save(
+        &package_dir,
+        Some(&result.video_path),
+        Some(&mouse_path),
+    ).map_err(|e| e.to_string())?;
+
+    let info = ProjectInfo {
+        name: project.name.clone(),
+        duration: project.duration(),
+        frame_rate: project.media.frame_rate,
+        width: project.media.pixel_size.width,
+        height: project.media.pixel_size.height,
+        package_path: package_dir.display().to_string(),
+    };
+
+    // Store as current project
+    {
+        let mut current = state.current_project.lock().unwrap();
+        *current = Some(LoadedProject {
+            project,
+            package_dir,
+        });
+    }
+
     // Reset for next recording
     recorder.reset();
 
-    Ok(format!(
-        "Recording saved: {} ({:.1}s, {} frames). Mouse data: {}",
-        result.video_path.display(),
-        result.duration,
-        result.frame_count,
-        mouse_path.display(),
-    ))
+    Ok(info)
 }
 
 #[tauri::command]
@@ -134,6 +186,56 @@ fn get_export_progress(state: State<AppState>) -> Option<ExportProgress> {
     state.export_progress.lock().unwrap().clone()
 }
 
+/// Save the current project to its package directory.
+#[tauri::command]
+fn save_project(state: State<AppState>) -> Result<String, String> {
+    let mut current = state.current_project.lock().unwrap();
+    let loaded = current.as_mut().ok_or("No project loaded")?;
+
+    loaded.project.save(&loaded.package_dir, None, None)
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!("Project saved: {}", loaded.package_dir.display()))
+}
+
+/// Load a project from a `.lazyrec` package directory path.
+#[tauri::command]
+fn load_project(path: String, state: State<AppState>) -> Result<ProjectInfo, String> {
+    let package_dir = PathBuf::from(&path);
+    let project = Project::load(&package_dir).map_err(|e| e.to_string())?;
+
+    let info = ProjectInfo {
+        name: project.name.clone(),
+        duration: project.duration(),
+        frame_rate: project.media.frame_rate,
+        width: project.media.pixel_size.width,
+        height: project.media.pixel_size.height,
+        package_path: package_dir.display().to_string(),
+    };
+
+    let mut current = state.current_project.lock().unwrap();
+    *current = Some(LoadedProject {
+        project,
+        package_dir,
+    });
+
+    Ok(info)
+}
+
+/// Get the currently loaded project info.
+#[tauri::command]
+fn get_current_project(state: State<AppState>) -> Option<ProjectInfo> {
+    let current = state.current_project.lock().unwrap();
+    current.as_ref().map(|loaded| ProjectInfo {
+        name: loaded.project.name.clone(),
+        duration: loaded.project.duration(),
+        frame_rate: loaded.project.media.frame_rate,
+        width: loaded.project.media.pixel_size.width,
+        height: loaded.project.media.pixel_size.height,
+        package_path: loaded.package_dir.display().to_string(),
+    })
+}
+
 /// Frame data returned to the frontend for preview rendering.
 /// Contains base64-encoded RGBA pixel data and dimensions.
 #[derive(serde::Serialize)]
@@ -194,6 +296,7 @@ pub fn run() {
         .manage(AppState {
             recorder: Mutex::new(RecordingCoordinator::new(output_dir)),
             export_progress: Arc::new(Mutex::new(None)),
+            current_project: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             check_permissions,
@@ -206,6 +309,9 @@ pub fn run() {
             start_export,
             get_export_progress,
             extract_preview_frame,
+            save_project,
+            load_project,
+            get_current_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
