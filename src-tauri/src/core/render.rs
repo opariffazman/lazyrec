@@ -585,11 +585,25 @@ pub mod ffmpeg_source {
     use ffmpeg::software::scaling;
     use ffmpeg::util::frame::video::Video as FfmpegFrame;
 
+    /// Wrapper to make scaling::Context Send-safe.
+    /// SwsContext is safe to use from one thread at a time (our usage pattern).
+    struct SendScaler(scaling::Context);
+    // SAFETY: We only access the scaler from a single thread at a time.
+    unsafe impl Send for SendScaler {}
+
+    impl std::ops::Deref for SendScaler {
+        type Target = scaling::Context;
+        fn deref(&self) -> &Self::Target { &self.0 }
+    }
+    impl std::ops::DerefMut for SendScaler {
+        fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+    }
+
     pub struct FfmpegVideoSource {
         input_ctx: format::context::Input,
         video_stream_index: usize,
         decoder: ffmpeg::codec::decoder::Video,
-        scaler: scaling::Context,
+        scaler: SendScaler,
         width: u32,
         height: u32,
         total: u64,
@@ -650,7 +664,7 @@ pub mod ffmpeg_source {
                 input_ctx,
                 video_stream_index,
                 decoder,
-                scaler,
+                scaler: SendScaler(scaler),
                 width,
                 height,
                 total,

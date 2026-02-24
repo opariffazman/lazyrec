@@ -144,13 +144,27 @@ pub mod ffmpeg_encoder {
     use ffmpeg::software::scaling;
     use ffmpeg::util::frame::video::Video as FfmpegFrame;
 
+    /// Wrapper to make scaling::Context Send-safe.
+    /// SwsContext is safe to use from one thread at a time (our usage pattern).
+    struct SendScaler(scaling::Context);
+    // SAFETY: We only access the scaler from a single thread at a time.
+    unsafe impl Send for SendScaler {}
+
+    impl std::ops::Deref for SendScaler {
+        type Target = scaling::Context;
+        fn deref(&self) -> &Self::Target { &self.0 }
+    }
+    impl std::ops::DerefMut for SendScaler {
+        fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+    }
+
     pub struct FfmpegEncoder {
         config: EncoderConfig,
         encoding: bool,
         frame_count: u64,
         output_ctx: Option<format::context::Output>,
         encoder: Option<codec::encoder::video::Encoder>,
-        scaler: Option<scaling::Context>,
+        scaler: Option<SendScaler>,
         stream_index: usize,
         time_base: ffmpeg::Rational,
     }
@@ -190,6 +204,9 @@ pub mod ffmpeg_encoder {
             let codec = codec::encoder::find(codec_id)
                 .ok_or_else(|| EncoderError::Ffmpeg(format!("Codec {:?} not found", codec_id)))?;
 
+            // Check global header flag before add_stream borrows output_ctx
+            let needs_global_header = output_ctx.format().flags().contains(format::Flags::GLOBAL_HEADER);
+
             let mut stream = output_ctx.add_stream(codec)
                 .map_err(|e| EncoderError::Ffmpeg(format!("Add stream: {e}")))?;
             self.stream_index = stream.index();
@@ -209,7 +226,7 @@ pub mod ffmpeg_encoder {
             encoder_ctx.set_bit_rate(self.config.bit_rate() as usize);
             encoder_ctx.set_gop(self.config.keyframe_interval);
 
-            if output_ctx.format().flags().contains(format::Flags::GLOBAL_HEADER) {
+            if needs_global_header {
                 encoder_ctx.set_flags(codec::Flags::GLOBAL_HEADER);
             }
 
@@ -234,7 +251,7 @@ pub mod ffmpeg_encoder {
 
             self.output_ctx = Some(output_ctx);
             self.encoder = Some(encoder);
-            self.scaler = Some(scaler);
+            self.scaler = Some(SendScaler(scaler));
             self.encoding = true;
             self.frame_count = 0;
 
