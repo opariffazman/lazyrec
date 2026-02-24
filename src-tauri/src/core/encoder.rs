@@ -133,10 +133,206 @@ impl VideoEncoder for StubEncoder {
     }
 }
 
+/// FFmpeg-based video encoder using ffmpeg-next crate.
+/// Encodes BGRA frames to H.264 or H.265 MP4 output.
+#[cfg(feature = "ffmpeg")]
+pub mod ffmpeg_encoder {
+    use super::*;
+    use ffmpeg_next as ffmpeg;
+    use ffmpeg::codec;
+    use ffmpeg::format;
+    use ffmpeg::software::scaling;
+    use ffmpeg::util::frame::video::Video as FfmpegFrame;
+
+    pub struct FfmpegEncoder {
+        config: EncoderConfig,
+        encoding: bool,
+        frame_count: u64,
+        output_ctx: Option<format::context::Output>,
+        encoder: Option<codec::encoder::video::Encoder>,
+        scaler: Option<scaling::Context>,
+        stream_index: usize,
+        time_base: ffmpeg::Rational,
+    }
+
+    impl FfmpegEncoder {
+        pub fn new(config: EncoderConfig) -> Result<Self, EncoderError> {
+            ffmpeg::init().map_err(|e| EncoderError::Ffmpeg(format!("FFmpeg init: {e}")))?;
+
+            Ok(Self {
+                config,
+                encoding: false,
+                frame_count: 0,
+                output_ctx: None,
+                encoder: None,
+                scaler: None,
+                stream_index: 0,
+                time_base: ffmpeg::Rational::new(1, 60),
+            })
+        }
+    }
+
+    impl VideoEncoder for FfmpegEncoder {
+        fn start(&mut self) -> Result<(), EncoderError> {
+            if self.encoding {
+                return Err(EncoderError::AlreadyStarted);
+            }
+
+            let path = &self.config.output_path;
+            let mut output_ctx = format::output(path)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Open output: {e}")))?;
+
+            let codec_id = match self.config.codec {
+                VideoCodec::H264 => codec::Id::H264,
+                VideoCodec::H265 => codec::Id::HEVC,
+            };
+
+            let codec = codec::encoder::find(codec_id)
+                .ok_or_else(|| EncoderError::Ffmpeg(format!("Codec {:?} not found", codec_id)))?;
+
+            let mut stream = output_ctx.add_stream(codec)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Add stream: {e}")))?;
+            self.stream_index = stream.index();
+
+            let time_base = ffmpeg::Rational::new(1, self.config.frame_rate as i32);
+            self.time_base = time_base;
+
+            let mut encoder_ctx = codec::context::Context::new_with_codec(codec)
+                .encoder()
+                .video()
+                .map_err(|e| EncoderError::Ffmpeg(format!("Encoder context: {e}")))?;
+
+            encoder_ctx.set_width(self.config.width);
+            encoder_ctx.set_height(self.config.height);
+            encoder_ctx.set_format(ffmpeg::format::Pixel::YUV420P);
+            encoder_ctx.set_time_base(time_base);
+            encoder_ctx.set_bit_rate(self.config.bit_rate() as usize);
+            encoder_ctx.set_gop(self.config.keyframe_interval);
+
+            if output_ctx.format().flags().contains(format::Flags::GLOBAL_HEADER) {
+                encoder_ctx.set_flags(codec::Flags::GLOBAL_HEADER);
+            }
+
+            let encoder = encoder_ctx.open_as(codec)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Open encoder: {e}")))?;
+
+            stream.set_parameters(&encoder);
+
+            output_ctx.write_header()
+                .map_err(|e| EncoderError::Ffmpeg(format!("Write header: {e}")))?;
+
+            // BGRA -> YUV420P scaler
+            let scaler = scaling::Context::get(
+                ffmpeg::format::Pixel::BGRA,
+                self.config.width,
+                self.config.height,
+                ffmpeg::format::Pixel::YUV420P,
+                self.config.width,
+                self.config.height,
+                scaling::Flags::BILINEAR,
+            ).map_err(|e| EncoderError::Ffmpeg(format!("Scaler init: {e}")))?;
+
+            self.output_ctx = Some(output_ctx);
+            self.encoder = Some(encoder);
+            self.scaler = Some(scaler);
+            self.encoding = true;
+            self.frame_count = 0;
+
+            Ok(())
+        }
+
+        fn append_frame(&mut self, frame: &VideoFrame) -> Result<(), EncoderError> {
+            if !self.encoding {
+                return Err(EncoderError::NotStarted);
+            }
+
+            let encoder = self.encoder.as_mut().unwrap();
+            let scaler = self.scaler.as_mut().unwrap();
+            let output_ctx = self.output_ctx.as_mut().unwrap();
+
+            // Create BGRA input frame
+            let mut bgra_frame = FfmpegFrame::new(
+                ffmpeg::format::Pixel::BGRA,
+                frame.width,
+                frame.height,
+            );
+            bgra_frame.data_mut(0)[..frame.data.len()].copy_from_slice(&frame.data);
+
+            // Convert BGRA -> YUV420P
+            let mut yuv_frame = FfmpegFrame::empty();
+            scaler.run(&bgra_frame, &mut yuv_frame)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Scale frame: {e}")))?;
+
+            let pts = self.frame_count as i64;
+            yuv_frame.set_pts(Some(pts));
+
+            // Send frame to encoder
+            encoder.send_frame(&yuv_frame)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Send frame: {e}")))?;
+
+            // Receive and write encoded packets
+            let mut packet = ffmpeg::Packet::empty();
+            while encoder.receive_packet(&mut packet).is_ok() {
+                packet.set_stream(self.stream_index);
+                packet.rescale_ts(self.time_base, output_ctx.stream(self.stream_index).unwrap().time_base());
+                packet.write_interleaved(output_ctx)
+                    .map_err(|e| EncoderError::Ffmpeg(format!("Write packet: {e}")))?;
+            }
+
+            self.frame_count += 1;
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<PathBuf, EncoderError> {
+            if !self.encoding {
+                return Err(EncoderError::NotStarted);
+            }
+
+            let encoder = self.encoder.as_mut().unwrap();
+            let output_ctx = self.output_ctx.as_mut().unwrap();
+
+            // Flush encoder
+            encoder.send_eof()
+                .map_err(|e| EncoderError::Ffmpeg(format!("Send EOF: {e}")))?;
+
+            let mut packet = ffmpeg::Packet::empty();
+            while encoder.receive_packet(&mut packet).is_ok() {
+                packet.set_stream(self.stream_index);
+                packet.rescale_ts(self.time_base, output_ctx.stream(self.stream_index).unwrap().time_base());
+                packet.write_interleaved(output_ctx)
+                    .map_err(|e| EncoderError::Ffmpeg(format!("Write packet: {e}")))?;
+            }
+
+            output_ctx.write_trailer()
+                .map_err(|e| EncoderError::Ffmpeg(format!("Write trailer: {e}")))?;
+
+            self.encoding = false;
+            Ok(self.config.output_path.clone())
+        }
+
+        fn is_encoding(&self) -> bool {
+            self.encoding
+        }
+
+        fn frames_encoded(&self) -> u64 {
+            self.frame_count
+        }
+    }
+}
+
 /// Create the video encoder.
-/// Currently returns a stub; will be replaced with FFmpeg backend
-/// when the ffmpeg-next dependency is added.
+/// Returns FFmpeg encoder when the `ffmpeg` feature is enabled,
+/// otherwise falls back to the stub encoder.
 pub fn create_encoder(config: EncoderConfig) -> Box<dyn VideoEncoder> {
-    // TODO: Replace with FfmpegEncoder when ffmpeg-next is integrated
+    #[cfg(feature = "ffmpeg")]
+    {
+        match ffmpeg_encoder::FfmpegEncoder::new(config.clone()) {
+            Ok(enc) => return Box::new(enc),
+            Err(e) => {
+                eprintln!("FFmpeg encoder init failed, falling back to stub: {e}");
+            }
+        }
+    }
+
     Box::new(StubEncoder::new(config))
 }

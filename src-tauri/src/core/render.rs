@@ -574,6 +574,207 @@ impl VideoSource for StubVideoSource {
     }
 }
 
+/// FFmpeg-based video source reader.
+/// Decodes video frames from a file for the render pipeline.
+#[cfg(feature = "ffmpeg")]
+pub mod ffmpeg_source {
+    use super::*;
+    use ffmpeg_next as ffmpeg;
+    use ffmpeg::format;
+    use ffmpeg::media::Type;
+    use ffmpeg::software::scaling;
+    use ffmpeg::util::frame::video::Video as FfmpegFrame;
+
+    pub struct FfmpegVideoSource {
+        input_ctx: format::context::Input,
+        video_stream_index: usize,
+        decoder: ffmpeg::codec::decoder::Video,
+        scaler: scaling::Context,
+        width: u32,
+        height: u32,
+        total: u64,
+        fps: f64,
+        dur: f64,
+        time_base: f64,
+    }
+
+    impl FfmpegVideoSource {
+        pub fn open(path: &std::path::Path) -> Result<Self, ExportError> {
+            ffmpeg::init().map_err(|e| ExportError::Io(
+                std::io::Error::new(std::io::ErrorKind::Other, format!("FFmpeg init: {e}"))
+            ))?;
+
+            let input_ctx = format::input(path).map_err(|e| ExportError::Io(
+                std::io::Error::new(std::io::ErrorKind::Other, format!("Open input: {e}"))
+            ))?;
+
+            let stream = input_ctx.streams().best(Type::Video)
+                .ok_or(ExportError::NoSource)?;
+            let video_stream_index = stream.index();
+
+            let time_base = stream.time_base();
+            let time_base_f64 = time_base.0 as f64 / time_base.1 as f64;
+
+            let decoder_ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+                .map_err(|e| ExportError::Io(
+                    std::io::Error::new(std::io::ErrorKind::Other, format!("Decoder context: {e}"))
+                ))?;
+            let decoder = decoder_ctx.decoder().video()
+                .map_err(|e| ExportError::Io(
+                    std::io::Error::new(std::io::ErrorKind::Other, format!("Open decoder: {e}"))
+                ))?;
+
+            let width = decoder.width();
+            let height = decoder.height();
+            let pixel_format = decoder.format();
+
+            let scaler = scaling::Context::get(
+                pixel_format,
+                width,
+                height,
+                ffmpeg::format::Pixel::BGRA,
+                width,
+                height,
+                scaling::Flags::BILINEAR,
+            ).map_err(|e| ExportError::Io(
+                std::io::Error::new(std::io::ErrorKind::Other, format!("Scaler init: {e}"))
+            ))?;
+
+            let fps = stream.avg_frame_rate();
+            let fps_f64 = if fps.1 != 0 { fps.0 as f64 / fps.1 as f64 } else { 30.0 };
+
+            let dur = input_ctx.duration() as f64 / ffmpeg::ffi::AV_TIME_BASE as f64;
+            let total = (dur * fps_f64) as u64;
+
+            Ok(Self {
+                input_ctx,
+                video_stream_index,
+                decoder,
+                scaler,
+                width,
+                height,
+                total,
+                fps: fps_f64,
+                dur,
+                time_base: time_base_f64,
+            })
+        }
+
+        fn seek_to(&mut self, time: f64) -> Result<(), ExportError> {
+            let timestamp = (time / self.time_base) as i64;
+            self.input_ctx.seek(timestamp, ..timestamp)
+                .map_err(|e| ExportError::Io(
+                    std::io::Error::new(std::io::ErrorKind::Other, format!("Seek: {e}"))
+                ))?;
+            self.decoder.flush();
+            Ok(())
+        }
+
+        fn decode_next_frame(&mut self) -> Result<FfmpegFrame, ExportError> {
+            loop {
+                for (stream, packet) in self.input_ctx.packets() {
+                    if stream.index() != self.video_stream_index {
+                        continue;
+                    }
+                    self.decoder.send_packet(&packet).map_err(|e| ExportError::Io(
+                        std::io::Error::new(std::io::ErrorKind::Other, format!("Send packet: {e}"))
+                    ))?;
+
+                    let mut decoded = FfmpegFrame::empty();
+                    if self.decoder.receive_frame(&mut decoded).is_ok() {
+                        return Ok(decoded);
+                    }
+                }
+                // If we exhausted packets, send EOF and try to get remaining frames
+                self.decoder.send_eof().ok();
+                let mut decoded = FfmpegFrame::empty();
+                if self.decoder.receive_frame(&mut decoded).is_ok() {
+                    return Ok(decoded);
+                }
+                return Err(ExportError::NoSource);
+            }
+        }
+    }
+
+    impl VideoSource for FfmpegVideoSource {
+        fn total_frames(&self) -> u64 {
+            self.total
+        }
+
+        fn frame_rate(&self) -> f64 {
+            self.fps
+        }
+
+        fn duration(&self) -> f64 {
+            self.dur
+        }
+
+        fn read_frame(&mut self, time: f64) -> Result<FrameBuffer, ExportError> {
+            self.seek_to(time)?;
+
+            let decoded = self.decode_next_frame()?;
+
+            // Convert to BGRA
+            let mut bgra_frame = FfmpegFrame::empty();
+            self.scaler.run(&decoded, &mut bgra_frame).map_err(|e| ExportError::Io(
+                std::io::Error::new(std::io::ErrorKind::Other, format!("Scale frame: {e}"))
+            ))?;
+
+            let stride = self.width * 4;
+            let data_size = (stride * self.height) as usize;
+            let src_data = bgra_frame.data(0);
+
+            // Handle potential stride mismatch
+            let src_stride = bgra_frame.stride(0) as u32;
+            let data = if src_stride == stride {
+                src_data[..data_size].to_vec()
+            } else {
+                let mut buf = vec![0u8; data_size];
+                for y in 0..self.height {
+                    let src_offset = (y * src_stride) as usize;
+                    let dst_offset = (y * stride) as usize;
+                    let row_bytes = stride as usize;
+                    buf[dst_offset..dst_offset + row_bytes]
+                        .copy_from_slice(&src_data[src_offset..src_offset + row_bytes]);
+                }
+                buf
+            };
+
+            Ok(FrameBuffer {
+                data,
+                width: self.width,
+                height: self.height,
+                stride,
+            })
+        }
+    }
+}
+
+/// Create a video source from a file path.
+/// Returns FFmpeg source when the `ffmpeg` feature is enabled and the file exists,
+/// otherwise falls back to the stub source.
+pub fn create_video_source_from_file(
+    path: &std::path::Path,
+    fallback_width: u32,
+    fallback_height: u32,
+    fallback_duration: f64,
+    fallback_fps: f64,
+) -> Box<dyn VideoSource> {
+    #[cfg(feature = "ffmpeg")]
+    {
+        if path.exists() {
+            match ffmpeg_source::FfmpegVideoSource::open(path) {
+                Ok(src) => return Box::new(src),
+                Err(e) => {
+                    eprintln!("FFmpeg source open failed, falling back to stub: {e}");
+                }
+            }
+        }
+    }
+    let _ = path; // suppress unused warning when ffmpeg feature disabled
+    Box::new(StubVideoSource::new(fallback_width, fallback_height, fallback_duration, fallback_fps))
+}
+
 /// Create a stub video source (placeholder for FFmpeg)
 pub fn create_video_source(width: u32, height: u32, duration: f64, fps: f64) -> Box<dyn VideoSource> {
     Box::new(StubVideoSource::new(width, height, duration, fps))

@@ -381,6 +381,22 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     setSelectedKeyframe(null);
   }, [selectedKeyframe]);
 
+  const handleUpdateKeyframe = useCallback((keyframeId: string, field: string, value: unknown) => {
+    setTracks(prev => prev.map(track => ({
+      ...track,
+      keyframes: track.keyframes.map(kf =>
+        kf.id === keyframeId ? { ...kf, [field]: value } : kf
+      ),
+    })));
+    // Also update the selected keyframe so inspector reflects the change
+    setSelectedKeyframe(prev => {
+      if (prev && prev.keyframe.id === keyframeId) {
+        return { ...prev, keyframe: { ...prev.keyframe, [field]: value } };
+      }
+      return prev;
+    });
+  }, []);
+
   // Delete key handler
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -438,7 +454,7 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
         )}
         <div className="editor-main">
           <VideoPreview playheadTime={playheadTime} duration={duration} />
-          <InspectorPanel selection={selectedKeyframe} />
+          <InspectorPanel selection={selectedKeyframe} onUpdateKeyframe={handleUpdateKeyframe} />
         </div>
 
         <div className="timeline-panel">
@@ -512,8 +528,10 @@ function VideoPreview({
 
 function InspectorPanel({
   selection,
+  onUpdateKeyframe,
 }: {
   selection: { trackType: string; keyframe: Keyframe } | null;
+  onUpdateKeyframe?: (keyframeId: string, field: string, value: unknown) => void;
 }) {
   const [tab, setTab] = useState<InspectorTab>("properties");
 
@@ -550,6 +568,7 @@ function InspectorPanel({
           <KeyframeProperties
             trackType={selection.trackType}
             keyframe={selection.keyframe}
+            onUpdate={onUpdateKeyframe}
           />
         ) : (
           <RenderSettingsPanel />
@@ -562,11 +581,14 @@ function InspectorPanel({
 function KeyframeProperties({
   trackType,
   keyframe,
+  onUpdate,
 }: {
   trackType: string;
   keyframe: Keyframe;
+  onUpdate?: (keyframeId: string, field: string, value: unknown) => void;
 }) {
   const color = TRACK_COLORS[trackType] || "#888";
+  const update = (field: string, value: unknown) => onUpdate?.(keyframe.id, field, value);
 
   return (
     <div className="kf-properties">
@@ -579,25 +601,33 @@ function KeyframeProperties({
 
       {trackType === "transform" && (
         <>
-          <PropertyRow label="Zoom" value={`${keyframe.zoom}x`} />
-          <PropertyRow label="Center X" value={String(keyframe.centerX)} />
-          <PropertyRow label="Center Y" value={String(keyframe.centerY)} />
-          <PropertyRow label="Easing" value={String(keyframe.easing)} />
+          <PropertyRow label="Zoom" value={keyframe.zoom as number} type="number" step={0.1} min={0.1} max={10}
+            onChange={(v) => update("zoom", v)} />
+          <PropertyRow label="Center X" value={keyframe.centerX as number} type="number" step={0.01} min={0} max={1}
+            onChange={(v) => update("centerX", v)} />
+          <PropertyRow label="Center Y" value={keyframe.centerY as number} type="number" step={0.01} min={0} max={1}
+            onChange={(v) => update("centerY", v)} />
         </>
       )}
 
       {trackType === "ripple" && (
         <>
-          <PropertyRow label="Intensity" value={String(keyframe.intensity)} />
-          <PropertyRow label="Duration" value={`${keyframe.rippleDuration}s`} />
-          <PropertyRow label="Color" value={String(keyframe.color)} />
+          <PropertyRow label="Intensity" value={keyframe.intensity as number} type="number" step={0.1} min={0} max={2}
+            onChange={(v) => update("intensity", v)} />
+          <PropertyRow label="Duration" value={keyframe.rippleDuration as number} type="number" step={0.1} min={0.1} max={5} suffix="s"
+            onChange={(v) => update("rippleDuration", v)} />
+          <PropertyRow label="Color" value={String(keyframe.color)} type="select"
+            options={["leftClick", "rightClick", "middleClick"]}
+            onChange={(v) => update("color", v)} />
         </>
       )}
 
       {trackType === "keystroke" && (
         <>
-          <PropertyRow label="Text" value={String(keyframe.text)} />
-          <PropertyRow label="Duration" value={`${keyframe.displayDuration}s`} />
+          <PropertyRow label="Text" value={String(keyframe.text)} type="text"
+            onChange={(v) => update("text", v)} />
+          <PropertyRow label="Duration" value={keyframe.displayDuration as number} type="number" step={0.1} min={0.1} max={10} suffix="s"
+            onChange={(v) => update("displayDuration", v)} />
         </>
       )}
 
@@ -612,6 +642,7 @@ function KeyframeProperties({
             <button
               key={e}
               className={`easing-btn ${keyframe.easing === e ? "active" : ""}`}
+              onClick={() => update("easing", e)}
             >
               {e}
             </button>
@@ -622,11 +653,55 @@ function KeyframeProperties({
   );
 }
 
-function PropertyRow({ label, value }: { label: string; value: string }) {
+function PropertyRow({
+  label,
+  value,
+  type = "text",
+  step,
+  min,
+  max,
+  suffix,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string | number;
+  type?: "text" | "number" | "select";
+  step?: number;
+  min?: number;
+  max?: number;
+  suffix?: string;
+  options?: string[];
+  onChange?: (value: string | number) => void;
+}) {
+  if (type === "select" && options) {
+    return (
+      <div className="property-row">
+        <span className="property-label">{label}</span>
+        <select className="property-select" value={String(value)}
+          onChange={(e) => onChange?.(e.target.value)}>
+          {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      </div>
+    );
+  }
+
   return (
     <div className="property-row">
-      <span className="property-label">{label}</span>
-      <input className="property-input" value={value} readOnly />
+      <span className="property-label">{label}{suffix ? ` (${suffix})` : ""}</span>
+      <input
+        className="property-input"
+        type={type}
+        value={value}
+        step={step}
+        min={min}
+        max={max}
+        onChange={(e) => {
+          const v = type === "number" ? parseFloat(e.target.value) || 0 : e.target.value;
+          onChange?.(v);
+        }}
+        readOnly={!onChange}
+      />
     </div>
   );
 }
