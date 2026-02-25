@@ -767,6 +767,16 @@ function EditorScreen({ onBack }: { onBack: () => void }) {
     setExportProgress(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+
+      // Auto-generate keyframes if timeline is empty (ensures zoom effects are applied)
+      const timeline = await invoke<{ tracks: { keyframes: unknown[] }[] }>("get_timeline");
+      const totalKfs = timeline.tracks.reduce((sum, t) => sum + t.keyframes.length, 0);
+      if (totalKfs === 0) {
+        console.log("Timeline empty — auto-generating keyframes before export");
+        await invoke("generate_keyframes");
+        await loadTimelineFromBackend();
+      }
+
       await invoke("start_export");
       // Export runs in background — progress comes via events
     } catch (err) {

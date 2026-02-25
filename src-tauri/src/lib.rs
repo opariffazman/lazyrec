@@ -213,6 +213,12 @@ fn start_export(app: AppHandle, state: State<AppState>) -> Result<String, String
         let output_path = output_dir.join(format!("export_{timestamp}.mp4"));
 
         let video_path = project.video_path(&package_dir);
+        log::info!(
+            "Export: video_path={}, exists={}, package_dir={}",
+            video_path.display(),
+            video_path.exists(),
+            package_dir.display(),
+        );
 
         // Fast path: if timeline has no effects, just copy the recording file.
         // No need to decode/re-encode every frame when nothing changes.

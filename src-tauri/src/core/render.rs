@@ -922,11 +922,22 @@ impl ExportEngine {
         }
 
         // Main render loop
+        let mut actual_frames: u64 = 0;
         for frame_idx in 0..total_frames {
             let time = frame_idx as f64 * frame_duration;
 
-            // 1. Read source frame
-            let source_frame = self.source.read_frame(time)?;
+            // 1. Read source frame (EOF = done, not an error)
+            let source_frame = match self.source.read_frame(time) {
+                Ok(f) => f,
+                Err(ExportError::NoSource) => {
+                    log::info!(
+                        "Source EOF at frame {} of {} — finishing export with {} frames",
+                        frame_idx, total_frames, actual_frames,
+                    );
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
 
             // 2. Evaluate timeline state at this time
             let state = self.evaluator.evaluate(
@@ -937,7 +948,7 @@ impl ExportEngine {
 
             // Log zoom per frame (every 100 frames)
             if frame_idx % 100 == 0 {
-                log::debug!("Frame {}: zoom={:.2}x center=({:.3},{:.3})", frame_idx, state.transform.zoom, state.transform.center.x, state.transform.center.y);
+                log::info!("Frame {}/{}: zoom={:.2}x center=({:.3},{:.3})", frame_idx, total_frames, state.transform.zoom, state.transform.center.x, state.transform.center.y);
             }
 
             // 3. Render all effects
@@ -946,6 +957,7 @@ impl ExportEngine {
             // 4. Encode (move data instead of clone — saves ~20MB per frame)
             let video_frame = output_frame.into_video_frame(time);
             self.encoder.append_frame(&video_frame)?;
+            actual_frames += 1;
 
             // 5. Progress update (every 10 frames)
             if frame_idx % 10 == 0 || frame_idx == total_frames - 1 {
