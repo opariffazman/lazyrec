@@ -200,8 +200,9 @@ pub mod windows {
         hook_thread_id: AtomicU32,
     }
 
-    // Global state for hook callbacks (Windows hooks require static/global access)
-    static HOOK_STATE: std::sync::OnceLock<Arc<HookState>> = std::sync::OnceLock::new();
+    // Global state for hook callbacks (Windows hooks require static/global access).
+    // Uses Mutex<Option<>> instead of OnceLock so it can be reset between recordings.
+    static HOOK_STATE: std::sync::Mutex<Option<Arc<HookState>>> = std::sync::Mutex::new(None);
 
     fn elapsed(state: &HookState) -> f64 {
         state.start_time.elapsed().as_secs_f64()
@@ -220,7 +221,7 @@ pub mod windows {
         l_param: LPARAM,
     ) -> LRESULT {
         if n_code >= 0 {
-            if let Some(state) = HOOK_STATE.get() {
+            if let Some(state) = HOOK_STATE.lock().unwrap().as_ref().cloned() {
                 let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
                 let pos = normalize_point(state, info.pt.x, info.pt.y);
                 let time = elapsed(state);
@@ -282,7 +283,7 @@ pub mod windows {
         l_param: LPARAM,
     ) -> LRESULT {
         if n_code >= 0 {
-            if let Some(state) = HOOK_STATE.get() {
+            if let Some(state) = HOOK_STATE.lock().unwrap().as_ref().cloned() {
                 let info = &*(l_param.0 as *const KBDLLHOOKSTRUCT);
                 let time = elapsed(state);
                 let msg = w_param.0 as u32;
@@ -360,7 +361,7 @@ pub mod windows {
             });
 
             // Store in global for hook callbacks
-            let _ = HOOK_STATE.set(state.clone());
+            *HOOK_STATE.lock().unwrap() = Some(state.clone());
 
             // Hook thread: installs low-level hooks and runs message loop
             let state_hook = state.clone();
@@ -454,7 +455,7 @@ pub mod windows {
             log::info!("Input monitor: signaling threads to stop...");
 
             // Signal threads to stop
-            if let Some(state) = HOOK_STATE.get() {
+            if let Some(state) = HOOK_STATE.lock().unwrap().as_ref().cloned() {
                 state.should_stop.store(true, Ordering::Relaxed);
 
                 // Post WM_QUIT to the hook thread's message queue using its actual thread ID
@@ -494,11 +495,16 @@ pub mod windows {
                 }
             }
 
-            // Extract recording
-            let recording = if let Some(state) = HOOK_STATE.get() {
-                std::mem::take(&mut *state.recording.lock().unwrap())
-            } else {
-                InputRecording::new()
+            // Extract recording and clear global state for next recording
+            let recording = {
+                let mut global = HOOK_STATE.lock().unwrap();
+                let rec = if let Some(state) = global.as_ref() {
+                    std::mem::take(&mut *state.recording.lock().unwrap())
+                } else {
+                    InputRecording::new()
+                };
+                *global = None; // Clear so next recording can set fresh state
+                rec
             };
 
             self.monitoring = false;
