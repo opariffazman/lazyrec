@@ -69,9 +69,21 @@ jobs:
           echo "FFMPEG_DIR=$env:FFMPEG_DIR"
           ffmpeg -version
 
-      - name: Bundle FFmpeg DLLs for installer
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri (compile only)
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Copy FFmpeg DLLs alongside exe
         run: |
-          # Copy FFmpeg shared DLLs to src-tauri so Tauri bundles them
+          # Copy FFmpeg DLLs directly next to the compiled binary.
+          # This ensures they end up in $INSTDIR (alongside LazyRec.exe)
+          # when Tauri creates the NSIS/MSI installer.
+          $target = "src-tauri\target\release"
           $dlls = @(
             "avcodec-61.dll",
             "avdevice-61.dll",
@@ -85,35 +97,56 @@ jobs:
           foreach ($dll in $dlls) {
             $src = "$env:FFMPEG_DIR\bin\$dll"
             if (Test-Path $src) {
-              Copy-Item $src "src-tauri\"
-              echo "Bundled: $dll"
+              Copy-Item $src "$target\"
+              echo "Copied $dll to $target"
             } else {
-              echo "Warning: $dll not found"
+              echo "WARNING: $dll not found in FFmpeg"
             }
           }
+          echo ""
+          echo "DLLs alongside exe:"
+          Get-ChildItem "$target\*.dll" | ForEach-Object { echo "  $($_.Name)" }
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Verify FFmpeg DLLs in src-tauri
-        run: |
-          echo "DLLs in src-tauri/:"
-          Get-ChildItem src-tauri\*.dll | ForEach-Object { echo "  $($_.Name) ($($_.Length) bytes)" }
-          $count = (Get-ChildItem src-tauri\*.dll).Count
-          if ($count -eq 0) { throw "No DLLs found in src-tauri/" }
-          echo "Total: $count DLLs ready for bundling"
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+      - name: Bundle Tauri installers
+        run: cargo tauri build --bundles nsis,msi
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Bundle FFmpeg DLLs as resources (DLLs copied to src-tauri/ in earlier step)
-          TAURI_CONFIG: '{"bundle":{"resources":["*.dll"]}}'
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "LazyRec ${{ github.ref_name }}"
-          releaseBody: "See the commits for changes in this release."
-          releaseDraft: false
-          prerelease: false
+
+      - name: Upload release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $bundleDir = "src-tauri\target\release\bundle"
+
+          # Create GitHub release
+          gh release create $tag --title "LazyRec $tag" --notes "See the commits for changes in this release." --latest
+
+          # Upload NSIS installer + signature
+          $nsisDir = "$bundleDir\nsis"
+          Get-ChildItem "$nsisDir\*" -Include "*.exe","*.exe.sig","*.nsis.zip","*.nsis.zip.sig" | ForEach-Object {
+            echo "Uploading: $($_.Name)"
+            gh release upload $tag $_.FullName --clobber
+          }
+
+          # Upload MSI installer + signature
+          $msiDir = "$bundleDir\msi"
+          Get-ChildItem "$msiDir\*" -Include "*.msi","*.msi.sig","*.msi.zip","*.msi.zip.sig" | ForEach-Object {
+            echo "Uploading: $($_.Name)"
+            gh release upload $tag $_.FullName --clobber
+          }
+
+          # Upload updater latest.json if it exists
+          $latestJson = "$bundleDir\nsis\latest.json"
+          if (-not (Test-Path $latestJson)) {
+            $latestJson = "$nsisDir\..\latest.json"
+          }
+          # Search more broadly for latest.json
+          $found = Get-ChildItem "$bundleDir" -Recurse -Filter "latest.json" | Select-Object -First 1
+          if ($found) {
+            echo "Uploading: latest.json from $($found.FullName)"
+            gh release upload $tag $found.FullName --clobber
+          } else {
+            echo "WARNING: latest.json not found in bundle output"
+          }
