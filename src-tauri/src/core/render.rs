@@ -908,6 +908,19 @@ impl ExportEngine {
         let frame_duration = 1.0 / self.ctx.frame_rate;
         let start_time = std::time::Instant::now();
 
+        // Log zoom keyframe summary for debugging
+        if let Some(tt) = self.timeline.transform_track() {
+            let zooms: Vec<f64> = tt.keyframes.iter().map(|k| k.zoom).collect();
+            let max_zoom = zooms.iter().cloned().fold(0.0f64, f64::max);
+            let min_zoom = zooms.iter().cloned().fold(f64::MAX, f64::min);
+            log::info!(
+                "Export: {} transform keyframes, zoom range {:.2}–{:.2}x, source {}x{} → output {}x{}",
+                tt.keyframes.len(), min_zoom, max_zoom,
+                self.ctx.source_size.width, self.ctx.source_size.height,
+                self.ctx.output_size.width, self.ctx.output_size.height,
+            );
+        }
+
         // Main render loop
         for frame_idx in 0..total_frames {
             let time = frame_idx as f64 * frame_duration;
@@ -921,6 +934,11 @@ impl ExportEngine {
                 time,
                 &self.mouse_positions,
             );
+
+            // Log zoom per frame (every 100 frames)
+            if frame_idx % 100 == 0 {
+                log::debug!("Frame {}: zoom={:.2}x center=({:.3},{:.3})", frame_idx, state.transform.zoom, state.transform.center.x, state.transform.center.y);
+            }
 
             // 3. Render all effects
             let output_frame = self.renderer.render_frame(&source_frame, &state);

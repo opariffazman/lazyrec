@@ -487,6 +487,13 @@ fn generate_keyframes(state: State<AppState>) -> Result<GeneratedKeyframes, Stri
     let keystroke_track = generate_keystrokes(&mouse_data.keyboard_events, &keystroke_settings);
     let cursor_track = generate_cursor_keyframes(&mouse_data.positions, &mouse_data.clicks);
 
+    // Log zoom keyframe details
+    for (i, kf) in transform_track.keyframes.iter().enumerate() {
+        log::info!(
+            "  Zoom keyframe {}: t={:.2}s zoom={:.2}x center=({:.3},{:.3})",
+            i, kf.time, kf.zoom, kf.center.x, kf.center.y,
+        );
+    }
     log::info!(
         "Generated keyframes: transform={}, ripple={}, cursor={}, keystroke={} (from {} clicks, {} keyboard events, {} drags, {} positions over {:.1}s)",
         transform_track.keyframe_count(),
