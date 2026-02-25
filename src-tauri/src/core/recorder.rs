@@ -101,7 +101,7 @@ pub enum RecorderError {
 
 /// Max frames buffered in the capture→encoder channel.
 /// If the encoder falls behind, new frames are dropped.
-const FRAME_CHANNEL_CAPACITY: usize = 4;
+const FRAME_CHANNEL_CAPACITY: usize = 120;
 
 /// Recording coordinator: manages the full recording lifecycle.
 pub struct RecordingCoordinator {

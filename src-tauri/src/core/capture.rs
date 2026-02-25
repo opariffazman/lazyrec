@@ -197,8 +197,6 @@ pub mod windows {
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
         MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
     };
-    use windows_capture::window::Window;
-
     /// Shared state passed into the capture handler via Flags
     struct CaptureFlags {
         on_frame: Mutex<Box<dyn FnMut(CapturedFrame) + Send>>,
@@ -272,35 +270,6 @@ pub mod windows {
         }
     }
 
-    /// Get window dimensions via Win32 FindWindowW + GetWindowRect.
-    fn get_window_rect_by_title(title: &str) -> (u32, u32) {
-        use ::windows::core::HSTRING;
-        use ::windows::Win32::Foundation::RECT;
-        use ::windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect, IsWindowVisible};
-
-        unsafe {
-            let htitle = HSTRING::from(title);
-            let hwnd = match FindWindowW(None, &htitle) {
-                Ok(h) => h,
-                Err(_) => return (0, 0),
-            };
-            if hwnd.is_invalid() {
-                return (0, 0);
-            }
-            if !IsWindowVisible(hwnd).as_bool() {
-                return (0, 0);
-            }
-            let mut rect = RECT::default();
-            if GetWindowRect(hwnd, &mut rect).is_ok() {
-                let w = (rect.right - rect.left).max(0) as u32;
-                let h = (rect.bottom - rect.top).max(0) as u32;
-                (w, h)
-            } else {
-                (0, 0)
-            }
-        }
-    }
-
     impl ScreenCapture for WindowsCapture {
         fn enumerate_sources(&self) -> Result<Vec<CaptureSource>, CaptureError> {
             let mut sources = Vec::new();
@@ -315,54 +284,6 @@ pub mod windows {
                         id: format!("display-{}", i),
                         name,
                         source_type: CaptureSourceType::Display,
-                        width: w,
-                        height: h,
-                    });
-                }
-            }
-
-            // Enumerate windows — filter out invisible/system/duplicate windows and get real dimensions
-            if let Ok(windows) = Window::enumerate() {
-                let mut seen_titles = std::collections::HashSet::new();
-                for window in windows {
-                    if !window.is_valid() {
-                        continue;
-                    }
-                    let title = match window.title() {
-                        Ok(t) if !t.is_empty() => t,
-                        _ => continue,
-                    };
-
-                    // Skip known system/hidden windows
-                    const SYSTEM_WINDOWS: &[&str] = &[
-                        "Microsoft Text Input Application",
-                        "Windows Input Experience",
-                        "Program Manager",
-                        "Windows Shell Experience Host",
-                        "MSCTFIME UI",
-                        "Default IME",
-                    ];
-                    if SYSTEM_WINDOWS.iter().any(|s| title.contains(s)) {
-                        continue;
-                    }
-
-                    // Skip duplicate window titles (same app appearing multiple times)
-                    if !seen_titles.insert(title.clone()) {
-                        continue;
-                    }
-
-                    // Get window dimensions via Win32 GetWindowRect
-                    let (w, h) = get_window_rect_by_title(&title);
-
-                    // Skip zero-size windows (hidden/minimized system windows)
-                    if w == 0 && h == 0 {
-                        continue;
-                    }
-
-                    sources.push(CaptureSource {
-                        id: format!("window-{}", title.replace(' ', "_")),
-                        name: title,
-                        source_type: CaptureSourceType::Window,
                         width: w,
                         height: h,
                     });
@@ -424,12 +345,14 @@ pub mod windows {
                     CaptureHandler::start_free_threaded(settings)
                         .map_err(|e| CaptureError::Platform(e.to_string()))?
                 }
-                CaptureTarget::Window { title, .. } => {
-                    let window = Window::from_contains_name(&title)
-                        .map_err(|e| CaptureError::Platform(format!("Window not found: {e}")))?;
+                CaptureTarget::Window { .. } => {
+                    // Window capture removed — fall back to primary display
+                    log::warn!("Window capture not supported, falling back to primary display");
+                    let monitor = Monitor::primary()
+                        .map_err(|e| CaptureError::Platform(format!("Monitor not found: {e}")))?;
 
                     let settings = Settings::new(
-                        window,
+                        monitor,
                         CursorCaptureSettings::WithCursor,
                         DrawBorderSettings::Default,
                         SecondaryWindowSettings::Default,

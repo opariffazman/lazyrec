@@ -193,7 +193,7 @@ interface RecordingStatusData {
 interface CaptureSourceInfo {
   id: string;
   name: string;
-  sourceType: "display" | "window";
+  sourceType: "display";
   width: number;
   height: number;
 }
@@ -267,15 +267,10 @@ function RecordingScreen({
           if (selectedSourceId) {
             const source = sources.find(s => s.id === selectedSourceId);
             if (source) {
-              let target;
-              if (source.sourceType === "window") {
-                target = { type: "window" as const, title: source.name, windowId: 0 };
-              } else {
-                // Parse display index from source id (e.g., "display-1" → 1)
-                const idxStr = source.id.replace("display-", "");
-                const displayId = parseInt(idxStr, 10) || 0;
-                target = { type: "display" as const, displayId };
-              }
+              // Parse display index from source id (e.g., "display-1" → 1)
+              const idxStr = source.id.replace("display-", "");
+              const displayId = parseInt(idxStr, 10) || 0;
+              const target = { type: "display" as const, displayId };
               await invoke("set_capture_target", {
                 target,
                 width: source.width || null,

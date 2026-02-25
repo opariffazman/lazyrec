@@ -181,11 +181,12 @@ pub mod windows {
     use ::windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, ReleaseDC, HORZRES, VERTRES};
     use ::windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetCursorPos, SetWindowsHookExW, UnhookWindowsHookEx,
-        GetMessageW, HHOOK, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
-        WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        GetMessageW, PeekMessageW, HHOOK, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
+        PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
         WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL,
         WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
+    use std::sync::atomic::AtomicU32;
 
     /// Thread-safe shared state for hook callbacks
     struct HookState {
@@ -195,6 +196,8 @@ pub mod windows {
         screen_width: f64,
         screen_height: f64,
         last_position: Mutex<NormalizedPoint>,
+        /// Thread ID of the hook thread (for PostThreadMessageW on stop)
+        hook_thread_id: AtomicU32,
     }
 
     // Global state for hook callbacks (Windows hooks require static/global access)
@@ -353,6 +356,7 @@ pub mod windows {
                 screen_width: sw,
                 screen_height: sh,
                 last_position: Mutex::new(NormalizedPoint::CENTER),
+                hook_thread_id: AtomicU32::new(0),
             });
 
             // Store in global for hook callbacks
@@ -362,6 +366,10 @@ pub mod windows {
             let state_hook = state.clone();
             self.hook_thread = Some(std::thread::spawn(move || {
                 unsafe {
+                    // Store this thread's ID so stop_monitoring can post WM_QUIT to it
+                    let tid = ::windows::Win32::System::Threading::GetCurrentThreadId();
+                    state_hook.hook_thread_id.store(tid, Ordering::Relaxed);
+
                     let mouse_hook = SetWindowsHookExW(
                         WH_MOUSE_LL,
                         Some(mouse_hook_proc),
@@ -376,12 +384,21 @@ pub mod windows {
                         0,
                     );
 
-                    // Message loop (required for hooks to work)
+                    // Non-blocking message loop: pump messages but check should_stop regularly
                     let mut msg = MSG::default();
                     while !state_hook.should_stop.load(Ordering::Relaxed) {
-                        if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
+                        // PeekMessageW is non-blocking — returns immediately if no messages
+                        while PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE).as_bool() {
+                            if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
+                                // WM_QUIT received
+                                state_hook.should_stop.store(true, Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                        if state_hook.should_stop.load(Ordering::Relaxed) {
                             break;
                         }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
 
                     if let Ok(h) = mouse_hook {
@@ -434,23 +451,47 @@ pub mod windows {
                 return Err(InputError::NotMonitoring);
             }
 
+            log::info!("Input monitor: signaling threads to stop...");
+
             // Signal threads to stop
             if let Some(state) = HOOK_STATE.get() {
                 state.should_stop.store(true, Ordering::Relaxed);
+
+                // Post WM_QUIT to the hook thread's message queue using its actual thread ID
+                let tid = state.hook_thread_id.load(Ordering::Relaxed);
+                if tid != 0 {
+                    log::info!("Input monitor: posting WM_QUIT to hook thread (tid={tid})");
+                    unsafe {
+                        let _ = ::windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                            tid, 0x0012 /* WM_QUIT */, WPARAM(0), LPARAM(0),
+                        );
+                    }
+                }
             }
 
-            // Wait for threads
+            // Wait for poll thread (should exit quickly from sleep loop)
             if let Some(h) = self.poll_thread.take() {
                 let _ = h.join();
             }
-            // Post quit message to unblock GetMessageW
-            unsafe {
-                ::windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
-                    0, 0x0012 /* WM_QUIT */, WPARAM(0), LPARAM(0),
-                ).ok();
-            }
+            log::info!("Input monitor: poll thread stopped");
+
+            // Wait for hook thread with timeout
             if let Some(h) = self.hook_thread.take() {
-                let _ = h.join();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                let mut joined = false;
+                while std::time::Instant::now() < deadline {
+                    if h.is_finished() {
+                        let _ = h.join();
+                        joined = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if !joined {
+                    log::warn!("Input monitor: hook thread did not stop within 2s, abandoning");
+                } else {
+                    log::info!("Input monitor: hook thread stopped");
+                }
             }
 
             // Extract recording
@@ -461,6 +502,8 @@ pub mod windows {
             };
 
             self.monitoring = false;
+            log::info!("Input monitor: stopped, collected {} positions, {} clicks, {} keystrokes",
+                recording.positions.len(), recording.clicks.len(), recording.keyboard.len());
             Ok(recording)
         }
 
