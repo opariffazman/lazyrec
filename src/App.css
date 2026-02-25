@@ -193,6 +193,13 @@
   cursor: not-allowed;
 }
 
+.update-message {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #7a8a9e;
+}
+
 /* Shared buttons */
 
 .back-btn {

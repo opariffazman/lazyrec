@@ -52,14 +52,20 @@ function WelcomeScreen({
   const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "done" | "error">("idle");
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
   const checkForUpdates = async () => {
     setUpdateChecking(true);
+    setUpdateMessage(null);
     try {
       const u = await check();
-      setUpdate(u);
-    } catch {
-      // No update or check failed
+      if (u) {
+        setUpdate(u);
+      } else {
+        setUpdateMessage("You're on the latest version");
+      }
+    } catch (err) {
+      setUpdateMessage(`Update check failed: ${err}`);
     }
     setUpdateChecking(false);
   };
@@ -170,9 +176,12 @@ function WelcomeScreen({
           {updateStatus === "error" && <span>Update failed. Please try again later.</span>}
         </div>
       ) : (
-        <button className="check-update-btn" onClick={checkForUpdates} disabled={updateChecking}>
-          {updateChecking ? "Checking..." : "Check for Updates"}
-        </button>
+        <>
+          <button className="check-update-btn" onClick={checkForUpdates} disabled={updateChecking}>
+            {updateChecking ? "Checking..." : "Check for Updates"}
+          </button>
+          {updateMessage && <span className="update-message">{updateMessage}</span>}
+        </>
       )}
     </div>
   );
