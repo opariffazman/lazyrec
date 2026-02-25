@@ -1,6 +1,6 @@
 [package]
 name = "lazyrec"
-version = "0.3.12"
+version = "0.3.13"
 description = "Cross-platform screen recorder with auto-zoom, timeline editing, and post-production effects"
 authors = ["opariffazman"]
 edition = "2021"
