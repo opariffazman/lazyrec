@@ -359,7 +359,7 @@ pub mod windows {
                     let settings = Settings::new(
                         monitor,
                         CursorCaptureSettings::WithCursor,
-                        DrawBorderSettings::WithoutBorder,
+                        DrawBorderSettings::Default,
                         SecondaryWindowSettings::Default,
                         MinimumUpdateIntervalSettings::Default,
                         DirtyRegionSettings::Default,
@@ -377,7 +377,7 @@ pub mod windows {
                     let settings = Settings::new(
                         window,
                         CursorCaptureSettings::WithCursor,
-                        DrawBorderSettings::WithoutBorder,
+                        DrawBorderSettings::Default,
                         SecondaryWindowSettings::Default,
                         MinimumUpdateIntervalSettings::Default,
                         DirtyRegionSettings::Default,
@@ -401,7 +401,7 @@ pub mod windows {
                     let settings = Settings::new(
                         monitor,
                         CursorCaptureSettings::WithCursor,
-                        DrawBorderSettings::WithoutBorder,
+                        DrawBorderSettings::Default,
                         SecondaryWindowSettings::Default,
                         MinimumUpdateIntervalSettings::Default,
                         DirtyRegionSettings::Default,
