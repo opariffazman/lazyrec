@@ -95,14 +95,22 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Verify FFmpeg DLLs in src-tauri
+        run: |
+          echo "DLLs in src-tauri/:"
+          Get-ChildItem src-tauri\*.dll | ForEach-Object { echo "  $($_.Name) ($($_.Length) bytes)" }
+          $count = (Get-ChildItem src-tauri\*.dll).Count
+          if ($count -eq 0) { throw "No DLLs found in src-tauri/" }
+          echo "Total: $count DLLs ready for bundling"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Merge FFmpeg DLL resources into bundle config (DLLs copied to src-tauri/ in earlier step)
-          TAURI_CONFIG: '{"bundle":{"resources":{"*.dll":"./"}}}'
+          # Bundle FFmpeg DLLs as resources (DLLs copied to src-tauri/ in earlier step)
+          TAURI_CONFIG: '{"bundle":{"resources":["*.dll"]}}'
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "LazyRec ${{ github.ref_name }}"
