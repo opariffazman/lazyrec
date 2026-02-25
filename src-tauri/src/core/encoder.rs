@@ -220,33 +220,38 @@ pub mod ffmpeg_encoder {
             }
 
             let path = &self.config.output_path;
-            let mut output_ctx = format::output(path)
-                .map_err(|e| EncoderError::Ffmpeg(format!("Open output: {e}")))?;
-
-            let needs_global_header = output_ctx.format().flags().contains(format::Flags::GLOBAL_HEADER);
             let time_base = ffmpeg::Rational::new(1, self.config.frame_rate as i32);
             self.time_base = time_base;
 
-            // Try hardware encoders first, fall back to software
+            // Probe for hardware encoder availability BEFORE creating output context.
+            // We try to open a test encoder context to verify the hw encoder actually works,
+            // not just that FFmpeg knows about it (driver may be missing).
             let hw_candidates = match self.config.codec {
                 VideoCodec::H264 => HW_H264,
                 VideoCodec::H265 => HW_H265,
             };
 
-            let mut chosen_codec = None;
-            let mut is_hw = false;
-
+            let mut use_hw_codec: Option<(codec::encoder::Encoder, String)> = None;
             for (name, label) in hw_candidates {
                 if let Some(c) = codec::encoder::find_by_name(name) {
-                    log::info!("Found hardware encoder: {name} ({label})");
-                    chosen_codec = Some((c, name.to_string()));
-                    is_hw = true;
-                    break;
+                    // Probe: try to create an encoder context to verify it works
+                    let probe_ok = codec::context::Context::new_with_codec(c)
+                        .encoder()
+                        .video()
+                        .is_ok();
+                    if probe_ok {
+                        log::info!("Found working hardware encoder: {name} ({label})");
+                        use_hw_codec = Some((c, name.to_string()));
+                        break;
+                    } else {
+                        log::warn!("Hardware encoder {name} found but context creation failed");
+                    }
                 }
             }
 
-            // Fall back to software
-            if chosen_codec.is_none() {
+            let (codec, encoder_name, is_hw) = if let Some((c, name)) = use_hw_codec {
+                (c, name, true)
+            } else {
                 let codec_id = match self.config.codec {
                     VideoCodec::H264 => codec::Id::H264,
                     VideoCodec::H265 => codec::Id::HEVC,
@@ -254,10 +259,12 @@ pub mod ffmpeg_encoder {
                 let c = codec::encoder::find(codec_id)
                     .ok_or_else(|| EncoderError::Ffmpeg(format!("Codec {:?} not found", codec_id)))?;
                 let name = if matches!(self.config.codec, VideoCodec::H264) { "libx264" } else { "libx265" };
-                chosen_codec = Some((c, name.to_string()));
-            }
+                (c, name.to_string(), false)
+            };
 
-            let (codec, encoder_name) = chosen_codec.unwrap();
+            let mut output_ctx = format::output(path)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Open output: {e}")))?;
+            let needs_global_header = output_ctx.format().flags().contains(format::Flags::GLOBAL_HEADER);
 
             let mut stream = output_ctx.add_stream(codec)
                 .map_err(|e| EncoderError::Ffmpeg(format!("Add stream: {e}")))?;
@@ -294,77 +301,9 @@ pub mod ffmpeg_encoder {
                 opts.set("crf", "23");
             }
 
-            // Try to open the encoder; if hw fails, retry with software
-            let encoder = match encoder_ctx.open_as_with(codec, opts) {
-                Ok(enc) => {
-                    log::info!("Using encoder: {encoder_name}");
-                    enc
-                }
-                Err(e) if is_hw => {
-                    log::warn!("Hardware encoder {encoder_name} failed: {e} — falling back to software");
-
-                    // Need a fresh output context since the stream was already added
-                    drop(output_ctx);
-                    drop(stream);
-                    let mut output_ctx2 = format::output(path)
-                        .map_err(|e| EncoderError::Ffmpeg(format!("Open output: {e}")))?;
-                    let needs_gh = output_ctx2.format().flags().contains(format::Flags::GLOBAL_HEADER);
-
-                    let codec_id = match self.config.codec {
-                        VideoCodec::H264 => codec::Id::H264,
-                        VideoCodec::H265 => codec::Id::HEVC,
-                    };
-                    let sw_codec = codec::encoder::find(codec_id)
-                        .ok_or_else(|| EncoderError::Ffmpeg(format!("Software codec not found")))?;
-
-                    let mut stream2 = output_ctx2.add_stream(sw_codec)
-                        .map_err(|e| EncoderError::Ffmpeg(format!("Add stream: {e}")))?;
-                    self.stream_index = stream2.index();
-
-                    let mut enc_ctx = codec::context::Context::new_with_codec(sw_codec)
-                        .encoder()
-                        .video()
-                        .map_err(|e| EncoderError::Ffmpeg(format!("Encoder context: {e}")))?;
-
-                    enc_ctx.set_width(self.config.width);
-                    enc_ctx.set_height(self.config.height);
-                    enc_ctx.set_format(ffmpeg::format::Pixel::YUV420P);
-                    enc_ctx.set_time_base(time_base);
-                    enc_ctx.set_bit_rate(self.config.bit_rate() as usize);
-                    enc_ctx.set_gop(self.config.keyframe_interval);
-                    enc_ctx.set_threading(codec::threading::Config::count(4));
-                    if needs_gh { enc_ctx.set_flags(codec::Flags::GLOBAL_HEADER); }
-
-                    let mut sw_opts = ffmpeg::Dictionary::new();
-                    sw_opts.set("preset", "ultrafast");
-                    sw_opts.set("crf", "23");
-
-                    let sw_name = if matches!(self.config.codec, VideoCodec::H264) { "libx264" } else { "libx265" };
-                    let enc = enc_ctx.open_as_with(sw_codec, sw_opts)
-                        .map_err(|e| EncoderError::Ffmpeg(format!("Open {sw_name}: {e}")))?;
-                    log::info!("Using software encoder: {sw_name} (ultrafast)");
-
-                    stream2.set_parameters(&enc);
-                    output_ctx2.write_header()
-                        .map_err(|e| EncoderError::Ffmpeg(format!("Write header: {e}")))?;
-                    self.output_ctx = Some(output_ctx2);
-                    self.encoder_name = sw_name.to_string();
-
-                    // BGRA -> YUV420P scaler
-                    let scaler = scaling::Context::get(
-                        ffmpeg::format::Pixel::BGRA, self.config.width, self.config.height,
-                        ffmpeg::format::Pixel::YUV420P, self.config.width, self.config.height,
-                        scaling::Flags::FAST_BILINEAR,
-                    ).map_err(|e| EncoderError::Ffmpeg(format!("Scaler init: {e}")))?;
-
-                    self.encoder = Some(enc);
-                    self.scaler = Some(SendScaler(scaler));
-                    self.encoding = true;
-                    self.frame_count = 0;
-                    return Ok(());
-                }
-                Err(e) => return Err(EncoderError::Ffmpeg(format!("Open encoder: {e}"))),
-            };
+            let encoder = encoder_ctx.open_as_with(codec, opts)
+                .map_err(|e| EncoderError::Ffmpeg(format!("Open encoder {encoder_name}: {e}")))?;
+            log::info!("Using encoder: {encoder_name}");
 
             self.encoder_name = encoder_name;
             stream.set_parameters(&encoder);
