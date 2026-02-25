@@ -231,7 +231,7 @@ pub mod ffmpeg_encoder {
                 VideoCodec::H265 => HW_H265,
             };
 
-            let mut use_hw_codec: Option<(codec::encoder::Encoder, String)> = None;
+            let mut use_hw_codec: Option<(ffmpeg::Codec, String)> = None;
             for (name, label) in hw_candidates {
                 if let Some(c) = codec::encoder::find_by_name(name) {
                     // Probe: try to create an encoder context to verify it works
