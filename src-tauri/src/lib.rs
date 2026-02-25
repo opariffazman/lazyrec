@@ -216,6 +216,8 @@ fn start_export(app: AppHandle, state: State<AppState>) -> Result<String, String
 
         // Fast path: if timeline has no effects, just copy the recording file.
         // No need to decode/re-encode every frame when nothing changes.
+        let kf_count = project.timeline.total_keyframe_count();
+        log::info!("Export: timeline has {} keyframes, is_empty={}", kf_count, project.timeline.is_empty());
         if project.timeline.is_empty() {
             log::info!("No effects — fast-copying recording to {}", output_path.display());
             let ps = progress_state.clone();
@@ -484,6 +486,19 @@ fn generate_keyframes(state: State<AppState>) -> Result<GeneratedKeyframes, Stri
     let ripple_track = generate_ripples(&mouse_data.clicks, &ripple_settings);
     let keystroke_track = generate_keystrokes(&mouse_data.keyboard_events, &keystroke_settings);
     let cursor_track = generate_cursor_keyframes(&mouse_data.positions, &mouse_data.clicks);
+
+    log::info!(
+        "Generated keyframes: transform={}, ripple={}, cursor={}, keystroke={} (from {} clicks, {} keyboard events, {} drags, {} positions over {:.1}s)",
+        transform_track.keyframe_count(),
+        ripple_track.keyframe_count(),
+        cursor_track.style_keyframes.as_ref().map_or(0, |v| v.len()),
+        keystroke_track.keyframe_count(),
+        mouse_data.clicks.len(),
+        mouse_data.keyboard_events.len(),
+        mouse_data.drags.len(),
+        mouse_data.positions.len(),
+        mouse_data.duration,
+    );
 
     let result = GeneratedKeyframes {
         transform_count: transform_track.keyframe_count(),
