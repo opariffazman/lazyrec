@@ -223,8 +223,8 @@ pub mod windows {
         if n_code >= 0 {
             if let Some(state) = HOOK_STATE.lock().unwrap().as_ref().cloned() {
                 let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
-                let pos = normalize_point(state, info.pt.x, info.pt.y);
-                let time = elapsed(state);
+                let pos = normalize_point(&state, info.pt.x, info.pt.y);
+                let time = elapsed(&state);
 
                 let msg = w_param.0 as u32;
                 match msg {
@@ -285,7 +285,7 @@ pub mod windows {
         if n_code >= 0 {
             if let Some(state) = HOOK_STATE.lock().unwrap().as_ref().cloned() {
                 let info = &*(l_param.0 as *const KBDLLHOOKSTRUCT);
-                let time = elapsed(state);
+                let time = elapsed(&state);
                 let msg = w_param.0 as u32;
 
                 let event_type = match msg {
