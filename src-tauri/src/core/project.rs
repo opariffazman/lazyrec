@@ -271,9 +271,9 @@ pub struct RenderSettings {
 impl Default for RenderSettings {
     fn default() -> Self {
         Self {
-            output_resolution: OutputResolution::Original,
+            output_resolution: OutputResolution::Fhd1080,
             output_frame_rate: OutputFrameRate::Original,
-            codec: VideoCodec::H265,
+            codec: VideoCodec::H264,
             quality: ExportQuality::High,
             background_enabled: false,
             corner_radius: 22.0,
@@ -597,7 +597,7 @@ mod tests {
         let s = RenderSettings::default();
         assert!(!s.background_enabled);
         assert!((s.corner_radius - 22.0).abs() < 0.001);
-        assert_eq!(s.codec, VideoCodec::H265);
+        assert_eq!(s.codec, VideoCodec::H264);
     }
 
     #[test]

@@ -242,11 +242,10 @@ pub mod ffmpeg_encoder {
                 encoder_ctx.set_flags(codec::Flags::GLOBAL_HEADER);
             }
 
-            // Set encoder preset: ultrafast for recording (real-time), fast for export
-            let preset = match self.config.purpose {
-                super::EncoderPurpose::Recording => "ultrafast",
-                super::EncoderPurpose::Export => "fast",
-            };
+            // Use ultrafast preset for both recording and export — speed is critical.
+            // At CRF 23 the quality difference between ultrafast and fast is negligible
+            // but ultrafast is 3-5x faster (crucial at 3440x1440).
+            let preset = "ultrafast";
 
             let mut opts = ffmpeg::Dictionary::new();
             opts.set("preset", preset);

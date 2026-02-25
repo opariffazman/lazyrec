@@ -213,6 +213,37 @@ fn start_export(app: AppHandle, state: State<AppState>) -> Result<String, String
         let output_path = output_dir.join(format!("export_{timestamp}.mp4"));
 
         let video_path = project.video_path(&package_dir);
+
+        // Fast path: if timeline has no effects, just copy the recording file.
+        // No need to decode/re-encode every frame when nothing changes.
+        if project.timeline.is_empty() {
+            log::info!("No effects — fast-copying recording to {}", output_path.display());
+            let ps = progress_state.clone();
+            if let Ok(mut p) = ps.lock() {
+                *p = Some(core::render::ExportProgress {
+                    current_frame: 0,
+                    total_frames: 1,
+                    progress: 0.5,
+                    eta_seconds: 0.0,
+                    state: core::render::ExportState::Rendering,
+                });
+            }
+            match std::fs::copy(&video_path, &output_path) {
+                Ok(_) => {
+                    let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+                    let size_mb = size as f64 / (1024.0 * 1024.0);
+                    let msg = format!("Export complete: {} ({:.1} MB)", output_path.display(), size_mb);
+                    log::info!("{msg}");
+                    let _ = app.emit("export-complete", &msg);
+                }
+                Err(e) => {
+                    log::error!("Fast copy failed: {e}");
+                    let _ = app.emit("export-error", &e.to_string());
+                }
+            }
+            return;
+        }
+
         let source = create_video_source_from_file(
             &video_path,
             project.media.pixel_size.width as u32,
