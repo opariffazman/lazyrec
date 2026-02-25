@@ -306,11 +306,25 @@ impl OutputResolution {
     pub fn size(&self, source: &Size) -> Size {
         match self {
             Self::Original => *source,
-            Self::Uhd4k => Size::new(3840.0, 2160.0),
-            Self::Qhd1440 => Size::new(2560.0, 1440.0),
-            Self::Fhd1080 => Size::new(1920.0, 1080.0),
-            Self::Hd720 => Size::new(1280.0, 720.0),
             Self::Custom { width, height } => Size::new(*width as f64, *height as f64),
+            // Standard resolutions: fit to target height, preserve source aspect ratio.
+            // This avoids stretching ultrawide (21:9) or other non-16:9 sources.
+            _ => {
+                let target_h = match self {
+                    Self::Uhd4k => 2160.0,
+                    Self::Qhd1440 => 1440.0,
+                    Self::Fhd1080 => 1080.0,
+                    Self::Hd720 => 720.0,
+                    _ => unreachable!(),
+                };
+                if source.height <= 0.0 {
+                    return Size::new(target_h * 16.0 / 9.0, target_h);
+                }
+                let aspect = source.width / source.height;
+                // Round width to even number (required by most video codecs)
+                let w = ((target_h * aspect) as u32 + 1) & !1;
+                Size::new(w as f64, target_h)
+            }
         }
     }
 }
