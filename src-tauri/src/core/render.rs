@@ -200,25 +200,31 @@ impl SoftwareRenderer {
     }
 
     /// Render a complete frame with all effects applied in correct order.
+    /// Avoids cloning the source when no pre-transform effects are active.
     pub fn render_frame(
         &self,
         source: &FrameBuffer,
         state: &EvaluatedFrameState,
     ) -> FrameBuffer {
-        let mut frame = source.clone();
+        let has_ripples = !state.ripples.is_empty();
+        let has_cursor = state.cursor.visible;
 
-        // 1. Ripple effects (over source, moves with transform)
-        for ripple in &state.ripples {
-            self.apply_ripple(&mut frame, ripple);
-        }
-
-        // 2. Cursor (over ripples, moves with transform)
-        if state.cursor.visible {
-            self.apply_cursor(&mut frame, &state.cursor);
-        }
+        // Only clone source if we need to draw pre-transform effects on it
+        let frame_ref = if has_ripples || has_cursor {
+            let mut frame = source.clone();
+            for ripple in &state.ripples {
+                self.apply_ripple(&mut frame, ripple);
+            }
+            if has_cursor {
+                self.apply_cursor(&mut frame, &state.cursor);
+            }
+            std::borrow::Cow::Owned(frame)
+        } else {
+            std::borrow::Cow::Borrowed(source)
+        };
 
         // 3. Transform (crop/zoom/pan)
-        let mut output = self.apply_transform(&frame, &state.transform);
+        let mut output = self.apply_transform(&frame_ref, &state.transform);
 
         // 4. Keystroke overlay (over output, FIXED on screen)
         for keystroke in &state.keystrokes {
@@ -825,6 +831,7 @@ impl ExportEngine {
             quality: ctx.render_settings.quality,
             output_path,
             keyframe_interval: 120,
+            purpose: super::encoder::EncoderPurpose::Export,
         };
 
         Self {

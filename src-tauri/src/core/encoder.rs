@@ -5,6 +5,14 @@ use std::path::PathBuf;
 
 use super::project::{ExportQuality, VideoCodec};
 
+/// Whether the encoder is used for live recording or offline export.
+/// Recording needs speed (ultrafast); export can trade speed for quality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderPurpose {
+    Recording,
+    Export,
+}
+
 /// Video encoder configuration
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
@@ -16,6 +24,8 @@ pub struct EncoderConfig {
     pub output_path: PathBuf,
     /// Key frame interval (GOP size)
     pub keyframe_interval: u32,
+    /// Whether this encoder is for live recording or offline export
+    pub purpose: EncoderPurpose,
 }
 
 impl EncoderConfig {
@@ -24,10 +34,11 @@ impl EncoderConfig {
             width,
             height,
             frame_rate: 60,
-            codec: VideoCodec::H265,
+            codec: VideoCodec::H264,
             quality: ExportQuality::High,
             output_path,
             keyframe_interval: 120,
+            purpose: EncoderPurpose::Recording,
         }
     }
 
@@ -225,12 +236,24 @@ pub mod ffmpeg_encoder {
             encoder_ctx.set_time_base(time_base);
             encoder_ctx.set_bit_rate(self.config.bit_rate() as usize);
             encoder_ctx.set_gop(self.config.keyframe_interval);
+            encoder_ctx.set_threading(codec::threading::Config::count(4));
 
             if needs_global_header {
                 encoder_ctx.set_flags(codec::Flags::GLOBAL_HEADER);
             }
 
-            let encoder = encoder_ctx.open_as(codec)
+            // Set encoder preset: ultrafast for recording (real-time), fast for export
+            let preset = match self.config.purpose {
+                super::EncoderPurpose::Recording => "ultrafast",
+                super::EncoderPurpose::Export => "fast",
+            };
+
+            let mut opts = ffmpeg::Dictionary::new();
+            opts.set("preset", preset);
+            // Use CRF (constant quality) instead of CBR for better quality/speed
+            opts.set("crf", "23");
+
+            let encoder = encoder_ctx.open_as_with(codec, opts)
                 .map_err(|e| EncoderError::Ffmpeg(format!("Open encoder: {e}")))?;
 
             stream.set_parameters(&encoder);
@@ -246,7 +269,7 @@ pub mod ffmpeg_encoder {
                 ffmpeg::format::Pixel::YUV420P,
                 self.config.width,
                 self.config.height,
-                scaling::Flags::BILINEAR,
+                scaling::Flags::FAST_BILINEAR,
             ).map_err(|e| EncoderError::Ffmpeg(format!("Scaler init: {e}")))?;
 
             self.output_ctx = Some(output_ctx);
@@ -352,7 +375,7 @@ mod tests {
         assert_eq!(cfg.height, 1080);
         assert_eq!(cfg.frame_rate, 60);
         assert_eq!(cfg.keyframe_interval, 120);
-        assert!(matches!(cfg.codec, VideoCodec::H265));
+        assert!(matches!(cfg.codec, VideoCodec::H264));
         assert!(matches!(cfg.quality, ExportQuality::High));
     }
 
