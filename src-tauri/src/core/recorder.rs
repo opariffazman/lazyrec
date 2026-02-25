@@ -275,7 +275,7 @@ impl RecordingCoordinator {
         let is_paused = self.is_paused.clone();
         let dropped = self.dropped_frames.clone();
 
-        self.capture.start_capture(
+        if let Err(e) = self.capture.start_capture(
             target,
             self.capture_config.clone(),
             Box::new(move |captured_frame| {
@@ -297,7 +297,11 @@ impl RecordingCoordinator {
                     dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }),
-        )?;
+        ) {
+            // Clean up input monitor if capture failed to start
+            let _ = self.input_monitor.stop_monitoring();
+            return Err(e.into());
+        }
 
         // Start timing
         self.recording_start = Some(Instant::now());
@@ -408,6 +412,10 @@ impl RecordingCoordinator {
 
     /// Reset to idle state for a new recording
     pub fn reset(&mut self) {
+        // Stop input monitor if still running (e.g. after a failed start)
+        if self.input_monitor.is_monitoring() {
+            let _ = self.input_monitor.stop_monitoring();
+        }
         self.state = RecordingState::Idle;
         self.recording_start = None;
         self.pause_start = None;
