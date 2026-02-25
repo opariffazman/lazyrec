@@ -274,9 +274,9 @@ pub mod windows {
 
     /// Get window dimensions via Win32 FindWindowW + GetWindowRect.
     fn get_window_rect_by_title(title: &str) -> (u32, u32) {
-        use windows::core::HSTRING;
-        use windows::Win32::Foundation::RECT;
-        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect, IsWindowVisible};
+        use ::windows::core::HSTRING;
+        use ::windows::Win32::Foundation::RECT;
+        use ::windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect, IsWindowVisible};
 
         unsafe {
             let htitle = HSTRING::from(title);
