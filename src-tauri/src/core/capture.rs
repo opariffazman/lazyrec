@@ -321,8 +321,9 @@ pub mod windows {
                 }
             }
 
-            // Enumerate windows — filter out invisible/system windows and get real dimensions
+            // Enumerate windows — filter out invisible/system/duplicate windows and get real dimensions
             if let Ok(windows) = Window::enumerate() {
+                let mut seen_titles = std::collections::HashSet::new();
                 for window in windows {
                     if !window.is_valid() {
                         continue;
@@ -342,6 +343,11 @@ pub mod windows {
                         "Default IME",
                     ];
                     if SYSTEM_WINDOWS.iter().any(|s| title.contains(s)) {
+                        continue;
+                    }
+
+                    // Skip duplicate window titles (same app appearing multiple times)
+                    if !seen_titles.insert(title.clone()) {
                         continue;
                     }
 

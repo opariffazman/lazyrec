@@ -51,9 +51,21 @@ function WelcomeScreen({
   const [update, setUpdate] = useState<Update | null>(null);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "done" | "error">("idle");
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [updateChecking, setUpdateChecking] = useState(false);
+
+  const checkForUpdates = async () => {
+    setUpdateChecking(true);
+    try {
+      const u = await check();
+      setUpdate(u);
+    } catch {
+      // No update or check failed
+    }
+    setUpdateChecking(false);
+  };
 
   useEffect(() => {
-    check().then((u) => setUpdate(u)).catch(() => {});
+    checkForUpdates();
   }, []);
 
   const handleUpdate = async () => {
@@ -138,7 +150,7 @@ function WelcomeScreen({
         <span className="drop-hint">.mp4, .mov, .lazyrec</span>
       </div>
 
-      {update && (
+      {update ? (
         <div className="update-banner">
           {updateStatus === "idle" && (
             <>
@@ -157,6 +169,10 @@ function WelcomeScreen({
           {updateStatus === "done" && <span>Update installed. Relaunching...</span>}
           {updateStatus === "error" && <span>Update failed. Please try again later.</span>}
         </div>
+      ) : (
+        <button className="check-update-btn" onClick={checkForUpdates} disabled={updateChecking}>
+          {updateChecking ? "Checking..." : "Check for Updates"}
+        </button>
       )}
     </div>
   );
@@ -296,15 +312,41 @@ function RecordingScreen({
     }
   };
 
+  const [isStopping, setIsStopping] = useState(false);
+
+  // Listen for async stop events
+  useEffect(() => {
+    let unlisten1: (() => void) | null = null;
+    let unlisten2: (() => void) | null = null;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlisten1 = await listen("recording-stopped", () => {
+        setIsStopping(false);
+        setState("idle");
+        setElapsed(0);
+        setFrameCount(0);
+        onRecordingComplete();
+      }) as unknown as () => void;
+      unlisten2 = await listen<string>("recording-stop-error", (event) => {
+        setIsStopping(false);
+        setError(String(event.payload));
+        setState("idle");
+      }) as unknown as () => void;
+    })();
+    return () => {
+      unlisten1?.();
+      unlisten2?.();
+    };
+  }, [onRecordingComplete]);
+
   const stopRecording = async () => {
+    setIsStopping(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("stop_recording");
-      setState("idle");
-      setElapsed(0);
-      setFrameCount(0);
-      onRecordingComplete();
+      // Don't transition state here — wait for the "recording-stopped" event
     } catch (err) {
+      setIsStopping(false);
       setError(String(err));
       setState("idle");
     }
@@ -374,8 +416,8 @@ function RecordingScreen({
               <button className="control-btn" onClick={togglePause}>
                 {state === "paused" ? "▶ Resume" : "⏸ Pause"}
               </button>
-              <button className="control-btn stop" onClick={stopRecording}>
-                ■ Stop
+              <button className="control-btn stop" onClick={stopRecording} disabled={isStopping}>
+                {isStopping ? "Stopping..." : "■ Stop"}
               </button>
             </div>
           </div>

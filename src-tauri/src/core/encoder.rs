@@ -452,7 +452,7 @@ pub fn create_encoder(config: EncoderConfig) -> Box<dyn VideoEncoder> {
         match ffmpeg_encoder::FfmpegEncoder::new(config.clone()) {
             Ok(enc) => return Box::new(enc),
             Err(e) => {
-                eprintln!("FFmpeg encoder init failed, falling back to stub: {e}");
+                log::warn!("FFmpeg encoder init failed, falling back to stub: {e}");
             }
         }
     }

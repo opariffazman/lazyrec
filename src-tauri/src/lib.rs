@@ -3,7 +3,7 @@ pub mod core;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use core::capture::create_capture;
 use core::permissions::{create_permissions_manager, PermissionReport};
@@ -13,7 +13,7 @@ use core::recorder::{RecordingCoordinator, RecordingStatus};
 use core::render::{ExportProgress, FrameBuffer};
 
 struct AppState {
-    recorder: Mutex<RecordingCoordinator>,
+    recorder: Arc<Mutex<RecordingCoordinator>>,
     export_progress: Arc<Mutex<Option<ExportProgress>>>,
     /// Currently loaded project (set after recording or opening a project)
     current_project: Mutex<Option<LoadedProject>>,
@@ -75,8 +75,12 @@ fn set_capture_target(
 
 #[tauri::command]
 fn start_recording(state: State<AppState>) -> Result<(), String> {
+    log::info!("Starting recording...");
     let mut recorder = state.recorder.lock().unwrap();
-    recorder.start().map_err(|e| e.to_string())
+    recorder.start().map_err(|e| {
+        log::error!("Failed to start recording: {e}");
+        e.to_string()
+    })
 }
 
 #[tauri::command]
@@ -91,53 +95,96 @@ fn resume_recording(state: State<AppState>) -> Result<(), String> {
     recorder.resume().map_err(|e| e.to_string())
 }
 
+/// Stop recording asynchronously. Returns immediately, emits "recording-stopped" event
+/// with the project info when done, or "recording-stop-error" with the error message.
 #[tauri::command]
-fn stop_recording(state: State<AppState>) -> Result<ProjectInfo, String> {
-    let mut recorder = state.recorder.lock().unwrap();
-    let result = recorder.stop().map_err(|e| e.to_string())?;
-
-    // Save input data alongside video
-    let mouse_path = result.save_input_data().map_err(|e| e.to_string())?;
-
-    // Create and save project package
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let package_name = format!("Recording_{timestamp}.lazyrec");
-    let package_dir = result.video_path.parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join(&package_name);
-
-    let mut project = result.to_project(format!("Recording {timestamp}"));
-    project.save(
-        &package_dir,
-        Some(&result.video_path),
-        Some(&mouse_path),
-    ).map_err(|e| e.to_string())?;
-
-    let info = ProjectInfo {
-        name: project.name.clone(),
-        duration: project.duration(),
-        frame_rate: project.media.frame_rate,
-        width: project.media.pixel_size.width,
-        height: project.media.pixel_size.height,
-        package_path: package_dir.display().to_string(),
-    };
-
-    // Store as current project
+fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    // Verify we can stop (check state without blocking for long)
     {
-        let mut current = state.current_project.lock().unwrap();
-        *current = Some(LoadedProject {
-            project,
-            package_dir,
-        });
+        let recorder = state.recorder.lock().unwrap();
+        let s = recorder.state();
+        if s != core::recorder::RecordingState::Recording && s != core::recorder::RecordingState::Paused {
+            return Err(format!("Cannot stop: recorder is {:?}", s));
+        }
     }
 
-    // Reset for next recording
-    recorder.reset();
+    // Clone what we need for the background thread
+    let recorder_clone = state.recorder.clone();
+    let app_for_thread = app.clone();
 
-    Ok(info)
+    std::thread::spawn(move || {
+        let stop_result = {
+            let mut recorder = recorder_clone.lock().unwrap();
+            let result = recorder.stop();
+            if result.is_ok() {
+                recorder.reset();
+            }
+            result
+        };
+
+        match stop_result {
+            Ok(result) => {
+                // Save input data alongside video
+                let mouse_path = match result.save_input_data() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::error!("Failed to save input data: {e}");
+                        let _ = app_for_thread.emit("recording-stop-error", e.to_string());
+                        return;
+                    }
+                };
+
+                // Create and save project package
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let package_name = format!("Recording_{timestamp}.lazyrec");
+                let package_dir = result.video_path.parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(&package_name);
+
+                let mut project = result.to_project(format!("Recording {timestamp}"));
+                if let Err(e) = project.save(
+                    &package_dir,
+                    Some(&result.video_path),
+                    Some(&mouse_path),
+                ) {
+                    log::error!("Failed to save project: {e}");
+                    let _ = app_for_thread.emit("recording-stop-error", e.to_string());
+                    return;
+                }
+
+                let info = ProjectInfo {
+                    name: project.name.clone(),
+                    duration: project.duration(),
+                    frame_rate: project.media.frame_rate,
+                    width: project.media.pixel_size.width,
+                    height: project.media.pixel_size.height,
+                    package_path: package_dir.display().to_string(),
+                };
+
+                // Store as current project — need to access AppState
+                // We use the app handle to get the managed state
+                let app_state: tauri::State<AppState> = app_for_thread.state();
+                {
+                    let mut current = app_state.current_project.lock().unwrap();
+                    *current = Some(LoadedProject {
+                        project,
+                        package_dir,
+                    });
+                }
+
+                let _ = app_for_thread.emit("recording-stopped", &info);
+            }
+            Err(e) => {
+                log::error!("Stop recording failed: {e}");
+                let _ = app_for_thread.emit("recording-stop-error", e.to_string());
+            }
+        }
+    });
+
+    Ok(())
 }
 
 /// Start export on a background thread. Progress is streamed via "export-progress" events.
@@ -641,11 +688,17 @@ pub fn run() {
         .join("LazyRec");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::new()
+            .target(tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::LogDir { file_name: Some("lazyrec".into()) },
+            ))
+            .level(log::LevelFilter::Info)
+            .build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(AppState {
-            recorder: Mutex::new(RecordingCoordinator::new(output_dir)),
+            recorder: Arc::new(Mutex::new(RecordingCoordinator::new(output_dir))),
             export_progress: Arc::new(Mutex::new(None)),
             current_project: Mutex::new(None),
         })

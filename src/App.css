@@ -170,6 +170,29 @@
   transition: width 0.3s ease;
 }
 
+.check-update-btn {
+  margin-top: 8px;
+  padding: 6px 16px;
+  background: transparent;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  color: #666;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.check-update-btn:hover:not(:disabled) {
+  color: #8bb8e8;
+  border-color: rgba(74, 144, 217, 0.3);
+}
+
+.check-update-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Shared buttons */
 
 .back-btn {

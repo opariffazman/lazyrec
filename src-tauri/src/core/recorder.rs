@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -253,7 +253,7 @@ impl RecordingCoordinator {
             let mut encoded = 0u64;
             while let Ok(frame) = rx.recv() {
                 if let Err(e) = encoder.append_frame(&frame) {
-                    eprintln!("Encoder error: {e}");
+                    log::error!("Encoder error: {e}");
                     // Continue encoding remaining frames
                 }
                 encoded += 1;
@@ -310,6 +310,7 @@ impl RecordingCoordinator {
         self.frame_count = 0;
         self.state = RecordingState::Recording;
 
+        log::info!("Recording started ({}x{})", self.capture_width, self.capture_height);
         Ok(())
     }
 
@@ -345,7 +346,8 @@ impl RecordingCoordinator {
         Ok(())
     }
 
-    /// Stop recording and return the result
+    /// Stop recording and return the result.
+    /// Uses a timeout on the encoder thread join to prevent hanging the UI.
     pub fn stop(&mut self) -> Result<RecordingResult, RecorderError> {
         if self.state != RecordingState::Recording && self.state != RecordingState::Paused {
             return Err(RecorderError::InvalidState {
@@ -357,23 +359,38 @@ impl RecordingCoordinator {
         self.state = RecordingState::Stopping;
         let duration = self.elapsed();
 
-        // Stop capture first (stops producing frames)
-        let _ = self.capture.stop_capture();
-
-        // Drop the sender to close the channel, signaling encoder thread to finish
+        // Drop the sender FIRST to close the channel — this unblocks the encoder thread's rx.recv()
         self.frame_sender = None;
 
-        // Wait for encoder thread to finish and get results
+        // Now stop capture (may block briefly while the capture handler finishes)
+        let _ = self.capture.stop_capture();
+
+        // Wait for encoder thread to finish with a timeout to prevent hanging
         let (encoded_count, video_path) = if let Some(handle) = self.encoder_thread.take() {
-            match handle.join() {
-                Ok(Ok((count, path))) => (count, path),
-                Ok(Err(e)) => {
-                    eprintln!("Encoder thread error: {e}");
+            // Use a polling approach with a 5-second total timeout
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut result = None;
+            while Instant::now() < deadline {
+                if handle.is_finished() {
+                    result = Some(handle.join());
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            match result {
+                Some(Ok(Ok((count, path)))) => (count, path),
+                Some(Ok(Err(e))) => {
+                    log::error!("Encoder thread error: {e}");
                     (self.shared_frame_count.load(Ordering::Relaxed), self.output_dir.join("recording.mp4"))
                 }
-                Err(_) => {
-                    eprintln!("Encoder thread panicked");
+                Some(Err(_)) => {
+                    log::error!("Encoder thread panicked");
                     (0, self.output_dir.join("recording.mp4"))
+                }
+                None => {
+                    // Timeout — encoder thread is stuck, abandon it
+                    log::warn!("Encoder thread did not finish within 5s, abandoning");
+                    (self.shared_frame_count.load(Ordering::Relaxed), self.output_dir.join("recording.mp4"))
                 }
             }
         } else {
@@ -382,7 +399,7 @@ impl RecordingCoordinator {
 
         let dropped = self.dropped_frames.load(Ordering::Relaxed);
         if dropped > 0 {
-            eprintln!("Recording: dropped {dropped} frames due to encoder backpressure");
+            log::warn!("Recording: dropped {dropped} frames due to encoder backpressure");
         }
 
         self.frame_count = encoded_count;
@@ -400,6 +417,7 @@ impl RecordingCoordinator {
 
         self.state = RecordingState::Completed;
 
+        log::info!("Recording stopped: {:.1}s, {} frames, path: {}", duration, self.frame_count, video_path.display());
         Ok(RecordingResult {
             video_path,
             input_data,

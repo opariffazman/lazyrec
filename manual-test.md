@@ -1,6 +1,6 @@
-# LazyRec v0.3.6 — Manual Test Checklist
+# LazyRec v0.3.7 — Manual Test Checklist
 
-Run the Windows installer (`LazyRec_0.3.6_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
+Run the Windows installer (`LazyRec_0.3.7_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
 
 ---
 
@@ -24,12 +24,14 @@ Run the Windows installer (`LazyRec_0.3.6_x64-setup.exe` or `.msi`) from the Git
 - [ ] Clicking **Open Video** transitions to the Editor screen
 - [ ] Clicking **Open Project** transitions to the Editor screen
 
-### 2a. Auto-Update Banner (NEW in v0.3.6)
+### 2a. Auto-Update Banner (NEW in v0.3.7)
 
 - [ ] If a newer version exists, blue banner appears: "Update available: vX.Y.Z [Install Update]"
 - [ ] Clicking Install shows download progress bar
 - [ ] After download, app relaunches with new version
-- [ ] If no update available, no banner shown (non-blocking)
+- [ ] If no update available, "Check for Updates" button shown instead
+- [ ] Clicking "Check for Updates" button triggers a manual check
+- [ ] While checking, button shows "Checking..." and is disabled
 
 ## 3. Recording Screen
 
@@ -47,7 +49,9 @@ Run the Windows installer (`LazyRec_0.3.6_x64-setup.exe` or `.msi`) from the Git
 - [ ] Timer counts up in `MM:SS` format
 - [ ] **Pause** button changes label to "PAUSED", dot stops blinking, timer freezes
 - [ ] **Resume** button resumes timer from where it paused
-- [ ] **Stop** button transitions to the Post-Recording screen
+- [ ] **Stop** button shows "Stopping..." while processing (non-blocking)
+- [ ] Stop completes and transitions to the Post-Recording screen without hanging
+- [ ] No duplicate/phantom window entries (e.g. Calculator appearing twice)
 - [ ] Starting a second recording after the first works without "Already monitoring" error
 - [ ] Elapsed time is consistent after multiple pause/resume cycles
 
@@ -152,7 +156,7 @@ Run the Windows installer (`LazyRec_0.3.6_x64-setup.exe` or `.msi`) from the Git
 
 ## Notes
 
-- **v0.3.6 changes**: Auto-update via tauri-plugin-updater. Fixed capture border error on older Windows. Fixed "Already monitoring" error on second recording. Window source list now shows real dimensions and filters out hidden system windows. FFmpeg DLLs bundled correctly alongside exe.
+- **v0.3.7 changes**: Non-blocking stop recording (fixes UI hang/crash on stop). Deduplicated window entries in source list. Added "Check for Updates" button on Welcome screen. Added file logging via tauri-plugin-log (logs to app log dir).
 - The recording backend uses real Windows capture via `windows-capture` and input hooks via `SetWindowsHookEx`.
 - The post-recording screen offers a streamlined "Export with Auto-Zoom" flow that skips the timeline editor entirely.
 - Inspector fields are read-only for now (display only, no editing).

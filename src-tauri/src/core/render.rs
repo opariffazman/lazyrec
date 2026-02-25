@@ -780,7 +780,7 @@ pub fn create_video_source_from_file(
             match ffmpeg_source::FfmpegVideoSource::open(path) {
                 Ok(src) => return Box::new(src),
                 Err(e) => {
-                    eprintln!("FFmpeg source open failed, falling back to stub: {e}");
+                    log::warn!("FFmpeg source open failed, falling back to stub: {e}");
                 }
             }
         }
