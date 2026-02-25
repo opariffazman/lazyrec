@@ -122,6 +122,54 @@
   color: #4a90d9;
 }
 
+/* Update banner */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 10px 20px;
+  background: rgba(74, 144, 217, 0.1);
+  border: 1px solid rgba(74, 144, 217, 0.3);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #8bb8e8;
+}
+
+.update-btn {
+  padding: 5px 14px;
+  background: #4a90d9;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.update-btn:hover {
+  background: #5a9fe9;
+}
+
+.update-progress {
+  flex: 1;
+  height: 6px;
+  background: #1a1a2e;
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 100px;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4a90d9, #50c878);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
 /* Shared buttons */
 
 .back-btn {

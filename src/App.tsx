@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
 
 type Screen = "welcome" | "recording" | "post-recording" | "editor";
@@ -46,6 +48,36 @@ function WelcomeScreen({
   onOpenEditor: () => void;
 }) {
   const [isDragging, setIsDragging] = useState(false);
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "done" | "error">("idle");
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
+  useEffect(() => {
+    check().then((u) => setUpdate(u)).catch(() => {});
+  }, []);
+
+  const handleUpdate = async () => {
+    if (!update) return;
+    setUpdateStatus("downloading");
+    try {
+      let total = 0;
+      let downloaded = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started" && event.data.contentLength) {
+          total = event.data.contentLength;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          if (total > 0) setDownloadProgress(Math.round((downloaded / total) * 100));
+        } else if (event.event === "Finished") {
+          setDownloadProgress(100);
+        }
+      });
+      setUpdateStatus("done");
+      await relaunch();
+    } catch {
+      setUpdateStatus("error");
+    }
+  };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -105,6 +137,27 @@ function WelcomeScreen({
         <span className="drop-text">Drop video or project here</span>
         <span className="drop-hint">.mp4, .mov, .lazyrec</span>
       </div>
+
+      {update && (
+        <div className="update-banner">
+          {updateStatus === "idle" && (
+            <>
+              <span>Update available: v{update.version}</span>
+              <button className="update-btn" onClick={handleUpdate}>Install Update</button>
+            </>
+          )}
+          {updateStatus === "downloading" && (
+            <>
+              <span>Downloading update... {downloadProgress}%</span>
+              <div className="update-progress">
+                <div className="update-progress-fill" style={{ width: `${downloadProgress}%` }} />
+              </div>
+            </>
+          )}
+          {updateStatus === "done" && <span>Update installed. Relaunching...</span>}
+          {updateStatus === "error" && <span>Update failed. Please try again later.</span>}
+        </div>
+      )}
     </div>
   );
 }
