@@ -280,7 +280,10 @@ pub mod windows {
 
         unsafe {
             let htitle = HSTRING::from(title);
-            let hwnd = FindWindowW(None, &htitle);
+            let hwnd = match FindWindowW(None, &htitle) {
+                Ok(h) => h,
+                Err(_) => return (0, 0),
+            };
             if hwnd.is_invalid() {
                 return (0, 0);
             }
