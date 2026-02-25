@@ -494,15 +494,17 @@ pub mod windows {
                 });
                 // Wait up to 3 seconds for it to finish
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                let mut joined = false;
                 while std::time::Instant::now() < deadline {
                     if handle.is_finished() {
                         let _ = handle.join();
+                        joined = true;
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 // If still running after 3s, abandon the thread (it'll clean up eventually)
-                if !handle.is_finished() {
+                if !joined {
                     log::warn!("Capture control.stop() timed out after 3s, abandoning");
                 }
             }
