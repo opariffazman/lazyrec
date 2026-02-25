@@ -1,12 +1,12 @@
-# LazyRec v0.3.2 — Manual Test Checklist
+# LazyRec v0.3.6 — Manual Test Checklist
 
-Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
+Run the Windows installer (`LazyRec_0.3.6_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
 
 ---
 
 ## 1. Installation & Launch
 
-- [ ] Installer runs without errors
+- [ ] Installer runs without errors (offers "Just Me" or "Everyone" options)
 - [ ] App launches and shows the Welcome screen
 - [ ] Window title says "LazyRec"
 - [ ] App icon appears in the taskbar
@@ -24,22 +24,34 @@ Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the Git
 - [ ] Clicking **Open Video** transitions to the Editor screen
 - [ ] Clicking **Open Project** transitions to the Editor screen
 
+### 2a. Auto-Update Banner (NEW in v0.3.6)
+
+- [ ] If a newer version exists, blue banner appears: "Update available: vX.Y.Z [Install Update]"
+- [ ] Clicking Install shows download progress bar
+- [ ] After download, app relaunches with new version
+- [ ] If no update available, no banner shown (non-blocking)
+
 ## 3. Recording Screen
 
 - [ ] "Recording" header and back button visible
 - [ ] Back button returns to the Welcome screen
 - [ ] Source selector dropdown populates with real display/window names on load
+- [ ] Displays show correct resolution (e.g. 1920x1080)
+- [ ] Application windows show correct dimensions (not 0x0)
+- [ ] No system/hidden windows listed (e.g. "Microsoft Text Input Application")
 - [ ] Selecting a different source updates the displayed name and dimensions
 - [ ] Clicking **Start Recording** sets capture target with correct dimensions
+- [ ] No "Toggling the capture border" error on start
 - [ ] 3-second countdown appears (3 → 2 → 1) with pulse animation
 - [ ] After countdown, state changes to "REC" with blinking red dot
 - [ ] Timer counts up in `MM:SS` format
 - [ ] **Pause** button changes label to "PAUSED", dot stops blinking, timer freezes
 - [ ] **Resume** button resumes timer from where it paused
 - [ ] **Stop** button transitions to the Post-Recording screen
+- [ ] Starting a second recording after the first works without "Already monitoring" error
 - [ ] Elapsed time is consistent after multiple pause/resume cycles
 
-## 4. Post-Recording Screen (NEW in v0.3.2)
+## 4. Post-Recording Screen
 
 - [ ] "Recording Complete" header and back button visible
 - [ ] Two choice cards displayed: **Export with Auto-Zoom** (highlighted) and **Open in Editor**
@@ -81,9 +93,9 @@ Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the Git
 
 ## 7. Editor Screen — Transport Controls
 
-- [ ] **Rewind** button (⏮) resets playhead to 00:00
-- [ ] **Play** button (▶) starts playback, changes to ⏸
-- [ ] **Pause** button (⏸) stops playback, changes to ▶
+- [ ] **Rewind** button resets playhead to 00:00
+- [ ] **Play** button starts playback, changes to pause
+- [ ] **Pause** button stops playback, changes to play
 - [ ] Time display shows `MM:SS / MM:SS` (current / duration)
 - [ ] Playhead resets to 00:00 and stops when reaching the end
 
@@ -117,7 +129,7 @@ Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the Git
 - [ ] **Export** button visible in the transport bar
 - [ ] Clicking Export starts the export process asynchronously
 - [ ] Button text changes to "Exporting..." and becomes disabled
-- [ ] Progress bar appears with gradient fill (blue → green)
+- [ ] Progress bar appears with gradient fill (blue to green)
 - [ ] Progress text shows frame count, percentage, and ETA
 - [ ] On completion, "Export complete" message displayed
 - [ ] Check `Videos/LazyRec/export_<timestamp>.mp4` was created on disk
@@ -140,7 +152,7 @@ Run the Windows installer (`LazyRec_0.3.1_x64-setup.exe` or `.msi`) from the Git
 
 ## Notes
 
-- **v0.3.2 changes**: FFmpeg is now enabled by default. Recording produces real MP4 files (not stubs). Export applies actual zoom/pan effects. FFmpeg DLLs are bundled with the installer.
+- **v0.3.6 changes**: Auto-update via tauri-plugin-updater. Fixed capture border error on older Windows. Fixed "Already monitoring" error on second recording. Window source list now shows real dimensions and filters out hidden system windows. FFmpeg DLLs bundled correctly alongside exe.
 - The recording backend uses real Windows capture via `windows-capture` and input hooks via `SetWindowsHookEx`.
 - The post-recording screen offers a streamlined "Export with Auto-Zoom" flow that skips the timeline editor entirely.
 - Inspector fields are read-only for now (display only, no editing).
