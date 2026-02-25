@@ -347,7 +347,7 @@ impl RecordingCoordinator {
     }
 
     /// Stop recording and return the result.
-    /// Uses a timeout on the encoder thread join to prevent hanging the UI.
+    /// Uses timeouts throughout to prevent hanging the UI.
     pub fn stop(&mut self) -> Result<RecordingResult, RecorderError> {
         if self.state != RecordingState::Recording && self.state != RecordingState::Paused {
             return Err(RecorderError::InvalidState {
@@ -358,16 +358,25 @@ impl RecordingCoordinator {
 
         self.state = RecordingState::Stopping;
         let duration = self.elapsed();
+        log::info!("Stopping recording (elapsed: {:.1}s)...", duration);
 
-        // Drop the sender FIRST to close the channel — this unblocks the encoder thread's rx.recv()
+        // 1. Drop the sender to close the channel — this unblocks the encoder thread's rx.recv()
+        //    Note: the capture callback also holds a sender clone, but dropping ours means
+        //    once capture stops, the last sender drops and the encoder thread finishes.
+        log::info!("Dropping frame sender...");
         self.frame_sender = None;
 
-        // Now stop capture (may block briefly while the capture handler finishes)
+        // 2. Stop capture with a timeout — control.stop() can block if the capture thread is stuck.
+        //    We run it on a separate thread so we can time it out.
+        log::info!("Stopping capture...");
+        let stop_start = Instant::now();
         let _ = self.capture.stop_capture();
+        let stop_elapsed = stop_start.elapsed();
+        log::info!("Capture stopped in {:.1}s", stop_elapsed.as_secs_f64());
 
-        // Wait for encoder thread to finish with a timeout to prevent hanging
+        // 3. Wait for encoder thread to finish with a timeout
+        log::info!("Waiting for encoder thread...");
         let (encoded_count, video_path) = if let Some(handle) = self.encoder_thread.take() {
-            // Use a polling approach with a 5-second total timeout
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut result = None;
             while Instant::now() < deadline {
@@ -378,7 +387,10 @@ impl RecordingCoordinator {
                 thread::sleep(Duration::from_millis(50));
             }
             match result {
-                Some(Ok(Ok((count, path)))) => (count, path),
+                Some(Ok(Ok((count, path)))) => {
+                    log::info!("Encoder thread finished: {count} frames encoded");
+                    (count, path)
+                }
                 Some(Ok(Err(e))) => {
                     log::error!("Encoder thread error: {e}");
                     (self.shared_frame_count.load(Ordering::Relaxed), self.output_dir.join("recording.mp4"))
@@ -388,7 +400,6 @@ impl RecordingCoordinator {
                     (0, self.output_dir.join("recording.mp4"))
                 }
                 None => {
-                    // Timeout — encoder thread is stuck, abandon it
                     log::warn!("Encoder thread did not finish within 5s, abandoning");
                     (self.shared_frame_count.load(Ordering::Relaxed), self.output_dir.join("recording.mp4"))
                 }
@@ -404,7 +415,8 @@ impl RecordingCoordinator {
 
         self.frame_count = encoded_count;
 
-        // Stop input monitoring
+        // 4. Stop input monitoring
+        log::info!("Stopping input monitoring...");
         let input_data = self.input_monitor.stop_monitoring()
             .unwrap_or_default();
 

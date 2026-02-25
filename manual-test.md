@@ -1,6 +1,6 @@
-# LazyRec v0.3.7 — Manual Test Checklist
+# LazyRec v0.3.8 — Manual Test Checklist
 
-Run the Windows installer (`LazyRec_0.3.7_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
+Run the Windows installer (`LazyRec_0.3.8_x64-setup.exe` or `.msi`) from the GitHub release, then work through each section.
 
 ---
 
@@ -24,7 +24,7 @@ Run the Windows installer (`LazyRec_0.3.7_x64-setup.exe` or `.msi`) from the Git
 - [ ] Clicking **Open Video** transitions to the Editor screen
 - [ ] Clicking **Open Project** transitions to the Editor screen
 
-### 2a. Auto-Update Banner (NEW in v0.3.7)
+### 2a. Auto-Update Banner (NEW in v0.3.8)
 
 - [ ] If a newer version exists, blue banner appears: "Update available: vX.Y.Z [Install Update]"
 - [ ] Clicking Install shows download progress bar
@@ -156,7 +156,7 @@ Run the Windows installer (`LazyRec_0.3.7_x64-setup.exe` or `.msi`) from the Git
 
 ## Notes
 
-- **v0.3.7 changes**: Non-blocking stop recording (fixes UI hang/crash on stop). Deduplicated window entries in source list. Added "Check for Updates" button on Welcome screen. Added file logging via tauri-plugin-log (logs to app log dir).
+- **v0.3.8 changes**: Non-blocking stop recording (fixes UI hang/crash on stop). Deduplicated window entries in source list. Added "Check for Updates" button on Welcome screen. Added file logging via tauri-plugin-log (logs to app log dir).
 - The recording backend uses real Windows capture via `windows-capture` and input hooks via `SetWindowsHookEx`.
 - The post-recording screen offers a streamlined "Export with Auto-Zoom" flow that skips the timeline editor entirely.
 - Inspector fields are read-only for now (display only, no editing).

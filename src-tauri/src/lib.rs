@@ -689,9 +689,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new()
-            .target(tauri_plugin_log::Target::new(
-                tauri_plugin_log::TargetKind::LogDir { file_name: Some("lazyrec".into()) },
-            ))
+            .targets([
+                tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir { file_name: Some("lazyrec".into()) },
+                ),
+            ])
             .level(log::LevelFilter::Info)
             .build())
         .plugin(tauri_plugin_opener::init())

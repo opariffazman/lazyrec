@@ -479,14 +479,32 @@ pub mod windows {
                 return Err(CaptureError::NotCapturing);
             }
 
-            // Signal the capture handler to stop
+            // Signal the capture handler to stop via atomic flag.
+            // The on_frame_arrived callback checks this and calls capture_control.stop().
             if let Some(flags) = &self.flags {
                 flags.should_stop.store(true, Ordering::Relaxed);
             }
 
-            // Stop the capture control (waits for thread)
+            // Stop the capture control. CaptureControl::stop() can block if the
+            // capture thread is stuck, so we run it on a separate thread with a timeout.
             if let Some(control) = self.control.take() {
-                let _ = control.stop();
+                // CaptureControl is Send, so we can move it to another thread
+                let handle = std::thread::spawn(move || {
+                    let _ = control.stop();
+                });
+                // Wait up to 3 seconds for it to finish
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                while std::time::Instant::now() < deadline {
+                    if handle.is_finished() {
+                        let _ = handle.join();
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                // If still running after 3s, abandon the thread (it'll clean up eventually)
+                if !handle.is_finished() {
+                    log::warn!("Capture control.stop() timed out after 3s, abandoning");
+                }
             }
 
             self.flags = None;
