@@ -279,15 +279,15 @@ pub struct SmartZoomSettings {
 impl Default for SmartZoomSettings {
     fn default() -> Self {
         Self {
-            min_zoom: 1.0,
+            min_zoom: 2.0,
             max_zoom: 8.0,
-            default_zoom: 3.0,
-            target_area_coverage: 0.7,
+            default_zoom: 4.0,
+            target_area_coverage: 0.4,
             focusing_duration: 0.5,
             idle_timeout: 1.0,
             transition_duration: 0.6,
-            session_merge_interval: 3.0,
-            session_merge_distance: 0.3,
+            session_merge_interval: 2.0,
+            session_merge_distance: 0.15,
             work_area_padding: 0.02,
             zoom_in_easing: EasingCurve::spring_default(),
             zoom_out_easing: EasingCurve::EaseInOut,
@@ -346,7 +346,11 @@ pub fn calculate_session_zoom(session: &mut WorkSession, settings: &SmartZoomSet
         return;
     }
 
-    let zoom = settings.target_area_coverage / area_size;
+    // Cap the area_size so spread-out clicks still get meaningful zoom
+    // Even if clicks span the whole screen, zoom at least to target_area_coverage
+    let effective_area = area_size.min(settings.target_area_coverage);
+
+    let zoom = settings.target_area_coverage / effective_area;
     session.zoom = zoom.clamp(settings.min_zoom, settings.max_zoom);
 }
 
@@ -475,8 +479,9 @@ fn generate_zoom_keyframes(
         last_session_end = session.end_time;
     }
 
-    // Clamp centers and deduplicate
+    // Clamp times to video duration and centers to valid range
     for kf in &mut keyframes {
+        kf.time = kf.time.clamp(0.0, total_duration);
         if kf.zoom > 1.0 {
             let half = 0.5 / kf.zoom;
             kf.center = NormalizedPoint::new(
@@ -798,8 +803,8 @@ mod tests {
         };
         let settings = SmartZoomSettings::default();
         calculate_session_zoom(&mut session, &settings);
-        // coverage 0.7 / area 0.1 = 7.0
-        assert!((session.zoom - 7.0).abs() < 1e-10);
+        // coverage 0.4 / area 0.1 = 4.0
+        assert!((session.zoom - 4.0).abs() < 1e-10);
     }
 
     #[test]

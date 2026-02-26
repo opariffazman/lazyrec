@@ -155,6 +155,14 @@ fn stop_recording(app: AppHandle, state: State<AppState>) -> Result<(), String> 
                     return;
                 }
 
+                // Clean up original files now that they're copied into the package
+                if let Err(e) = std::fs::remove_file(&result.video_path) {
+                    log::warn!("Failed to remove original video: {e}");
+                }
+                if let Err(e) = std::fs::remove_file(&mouse_path) {
+                    log::warn!("Failed to remove original mouse data: {e}");
+                }
+
                 let info = ProjectInfo {
                     name: project.name.clone(),
                     duration: project.duration(),
