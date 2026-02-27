@@ -596,9 +596,7 @@ pub mod ffmpeg_source {
         video_stream_index: usize,
         decoder: ffmpeg::codec::decoder::Video,
         scaler: SendScaler,
-        /// Output width (may differ from source when target dimensions are provided)
         width: u32,
-        /// Output height (may differ from source when target dimensions are provided)
         height: u32,
         total: u64,
         fps: f64,
@@ -608,16 +606,8 @@ pub mod ffmpeg_source {
 
     impl FfmpegVideoSource {
         /// Open a video file for decoding.
-        ///
-        /// If `target_width`/`target_height` are provided, the scaler will
-        /// downscale decoded frames to those dimensions during color conversion,
-        /// avoiding a separate full-resolution copy. This is a major speedup when
-        /// the source is larger than the output (e.g. 3440x1440 → 2580x1080).
-        pub fn open(
-            path: &std::path::Path,
-            target_width: Option<u32>,
-            target_height: Option<u32>,
-        ) -> Result<Self, ExportError> {
+        /// Always decodes at source resolution to preserve quality for zoom crops.
+        pub fn open(path: &std::path::Path) -> Result<Self, ExportError> {
             ffmpeg::init().map_err(|e| ExportError::Io(
                 std::io::Error::new(std::io::ErrorKind::Other, format!("FFmpeg init: {e}"))
             ))?;
@@ -642,28 +632,20 @@ pub mod ffmpeg_source {
                     std::io::Error::new(std::io::ErrorKind::Other, format!("Open decoder: {e}"))
                 ))?;
 
-            let src_width = decoder.width();
-            let src_height = decoder.height();
+            let width = decoder.width();
+            let height = decoder.height();
             let pixel_format = decoder.format();
 
-            // Use target dimensions if provided, otherwise keep source dimensions
-            let out_width = target_width.unwrap_or(src_width);
-            let out_height = target_height.unwrap_or(src_height);
-
-            log::info!(
-                "FfmpegVideoSource: {}x{} → {}x{} ({})",
-                src_width, src_height, out_width, out_height,
-                if out_width == src_width && out_height == src_height { "no resize" } else { "downscaled" },
-            );
+            log::info!("FfmpegVideoSource: {}x{} {:?}", width, height, pixel_format);
 
             let scaler = scaling::Context::get(
                 pixel_format,
-                src_width,
-                src_height,
+                width,
+                height,
                 ffmpeg::format::Pixel::BGRA,
-                out_width,
-                out_height,
-                scaling::Flags::BILINEAR,
+                width,
+                height,
+                scaling::Flags::FAST_BILINEAR,
             ).map_err(|e| ExportError::Io(
                 std::io::Error::new(std::io::ErrorKind::Other, format!("Scaler init: {e}"))
             ))?;
@@ -679,8 +661,8 @@ pub mod ffmpeg_source {
                 video_stream_index,
                 decoder,
                 scaler: SendScaler(scaler),
-                width: out_width,
-                height: out_height,
+                width,
+                height,
                 total,
                 fps: fps_f64,
                 dur,
@@ -782,22 +764,17 @@ pub mod ffmpeg_source {
 /// Create a video source from a file path.
 /// Returns FFmpeg source when the `ffmpeg` feature is enabled and the file exists,
 /// otherwise falls back to the stub source.
-///
-/// `target_width`/`target_height` let the decoder downscale during color conversion
-/// (e.g. 3440x1440 → 2580x1080), avoiding a separate full-resolution copy.
 pub fn create_video_source_from_file(
     path: &std::path::Path,
     fallback_width: u32,
     fallback_height: u32,
     fallback_duration: f64,
     fallback_fps: f64,
-    target_width: Option<u32>,
-    target_height: Option<u32>,
 ) -> Box<dyn VideoSource> {
     #[cfg(feature = "ffmpeg")]
     {
         if path.exists() {
-            match ffmpeg_source::FfmpegVideoSource::open(path, target_width, target_height) {
+            match ffmpeg_source::FfmpegVideoSource::open(path) {
                 Ok(src) => return Box::new(src),
                 Err(e) => {
                     log::warn!("FFmpeg source open failed, falling back to stub: {e}");
@@ -805,7 +782,7 @@ pub fn create_video_source_from_file(
             }
         }
     }
-    let _ = (path, target_width, target_height); // suppress unused warnings when ffmpeg feature disabled
+    let _ = path; // suppress unused warning when ffmpeg feature disabled
     Box::new(StubVideoSource::new(fallback_width, fallback_height, fallback_duration, fallback_fps))
 }
 

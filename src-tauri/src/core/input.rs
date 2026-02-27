@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::coordinates::NormalizedPoint;
 
-/// Mouse position sample (60Hz)
+/// Mouse position sample (60Hz, matches video frame rate)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MousePositionSample {
     /// Seconds since recording start
@@ -412,6 +412,8 @@ pub mod windows {
             }));
 
             // Poll thread: 60Hz mouse position sampling
+            // Matches video frame rate for 1:1 alignment (Screenize pattern).
+            // Cursor smoothing during export uses interpolation, not higher sample rate.
             let state_poll = state.clone();
             self.poll_thread = Some(std::thread::spawn(move || {
                 let interval = std::time::Duration::from_micros(16_667); // ~60Hz
@@ -426,7 +428,7 @@ pub mod windows {
                     // Compute velocity from last position
                     let velocity = {
                         let mut last = state_poll.last_position.lock().unwrap();
-                        let v = last.distance(&pos) * 60.0; // per second
+                        let v = last.distance(&pos) * 60.0; // per second (matches poll rate)
                         *last = pos;
                         v
                     };
