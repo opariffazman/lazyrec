@@ -279,18 +279,19 @@ pub struct SmartZoomSettings {
 impl Default for SmartZoomSettings {
     fn default() -> Self {
         Self {
-            min_zoom: 2.0,
-            max_zoom: 8.0,
-            default_zoom: 4.0,
-            target_area_coverage: 0.4,
-            focusing_duration: 0.5,
-            idle_timeout: 1.0,
-            transition_duration: 0.6,
-            session_merge_interval: 2.0,
-            session_merge_distance: 0.15,
+            // Matches Screenize defaults
+            min_zoom: 1.0,              // resting = full screen
+            max_zoom: 2.5,              // conservative max
+            default_zoom: 1.8,          // fallback when area is tiny
+            target_area_coverage: 0.7,  // aim for 70% screen coverage
+            focusing_duration: 1.0,     // 1s zoom-in animation
+            idle_timeout: 4.0,          // hold 4s after activity before zoom-out
+            transition_duration: 1.2,   // 1.2s zoom-out animation
+            session_merge_interval: 3.0,
+            session_merge_distance: 0.3,
             work_area_padding: 0.02,
             zoom_in_easing: EasingCurve::spring_default(),
-            zoom_out_easing: EasingCurve::EaseInOut,
+            zoom_out_easing: EasingCurve::EaseOut,
             move_easing: EasingCurve::spring_smooth(),
         }
     }
@@ -336,7 +337,8 @@ pub fn cluster_activities(
 // Zoom Level Calculator
 // ============================================================================
 
-/// Calculate zoom level for a session based on its work area
+/// Calculate zoom level for a session based on its work area.
+/// Matches Screenize: `zoom = targetAreaCoverage / areaSize`, clamped to [min, max].
 pub fn calculate_session_zoom(session: &mut WorkSession, settings: &SmartZoomSettings) {
     let (_, _, w, h) = session.work_area;
     let area_size = w.max(h);
@@ -346,11 +348,7 @@ pub fn calculate_session_zoom(session: &mut WorkSession, settings: &SmartZoomSet
         return;
     }
 
-    // Cap the area_size so spread-out clicks still get meaningful zoom
-    // Even if clicks span the whole screen, zoom at least to target_area_coverage
-    let effective_area = area_size.min(settings.target_area_coverage);
-
-    let zoom = settings.target_area_coverage / effective_area;
+    let zoom = settings.target_area_coverage / area_size;
     session.zoom = zoom.clamp(settings.min_zoom, settings.max_zoom);
 }
 
@@ -381,6 +379,14 @@ pub fn generate_smart_zoom(
     track
 }
 
+/// Generate zoom keyframes following Screenize's pattern:
+///
+/// 1. Always start at 1.0x (full screen)
+/// 2. Zoom in ~1s before each activity session
+/// 3. Hold zoomed during activity + idle_timeout buffer
+/// 4. Between distant sessions: zoom out to 1.0x, then zoom in to next
+/// 5. Between nearby sessions: pan directly without zooming out
+/// 6. Final session: zoom out to 1.0x before video ends
 fn generate_zoom_keyframes(
     sessions: &[WorkSession],
     total_duration: f64,
@@ -391,55 +397,80 @@ fn generate_zoom_keyframes(
     }
 
     let mut keyframes: Vec<TransformKeyframe> = Vec::new();
+
+    // Always start at full screen (1.0x zoom, centered)
+    keyframes.push(TransformKeyframe::new(
+        0.0,
+        settings.min_zoom,
+        NormalizedPoint::CENTER,
+        EasingCurve::Linear,
+    ));
+
     let mut last_session_end: f64 = 0.0;
 
     for (i, session) in sessions.iter().enumerate() {
-        // Zoom-in keyframe (start zooming before session begins)
-        let zoom_in_start = (session.start_time - settings.focusing_duration)
-            .max(last_session_end + 0.1)
-            .max(0.0);
+        let needs_zoom_in = i == 0
+            || keyframes.last().map_or(true, |kf| kf.zoom <= settings.min_zoom + 0.01);
 
-        // Hold at min zoom before zooming in
-        keyframes.push(TransformKeyframe::new(
-            zoom_in_start,
-            settings.min_zoom,
-            NormalizedPoint::CENTER,
-            settings.zoom_in_easing.clone(),
-        ));
+        if needs_zoom_in {
+            // Zoom-in start: hold at 1.0x just before zooming
+            let zoom_in_start = (session.start_time - settings.focusing_duration)
+                .max(last_session_end + 0.1)
+                .max(0.0);
 
-        // Zoomed-in keyframe at session start
-        keyframes.push(TransformKeyframe::new(
-            session.start_time,
-            session.zoom,
-            session.center,
-            settings.move_easing.clone(),
-        ));
+            // Only add a resting keyframe if it doesn't duplicate the last one
+            let last_time = keyframes.last().map_or(-1.0, |kf| kf.time);
+            if zoom_in_start > last_time + 0.05 {
+                keyframes.push(TransformKeyframe::new(
+                    zoom_in_start,
+                    settings.min_zoom,
+                    NormalizedPoint::CENTER,
+                    settings.zoom_in_easing.clone(),
+                ));
+            }
 
-        // Determine zoom-out/transition
+            // Zoom in to session level at session start
+            keyframes.push(TransformKeyframe::new(
+                session.start_time,
+                session.zoom,
+                session.center,
+                settings.zoom_in_easing.clone(),
+            ));
+        }
+
+        // Determine transition to next session or zoom-out
         let hold_end = session.end_time + settings.idle_timeout;
 
         if let Some(next_session) = sessions.get(i + 1) {
             let time_between = next_session.start_time - session.end_time;
+            let should_transition_directly =
+                time_between < settings.idle_timeout + settings.transition_duration;
 
-            if time_between < settings.idle_timeout + settings.transition_duration {
-                // Direct transition to next session
-                let move_start = session.end_time
-                    + (time_between * 0.3).min(1.0);
-
+            if should_transition_directly {
+                // Direct pan transition: hold current, then slide to next session
+                let move_start = session.end_time + (time_between * 0.3).min(1.0);
                 keyframes.push(TransformKeyframe::new(
                     move_start,
                     session.zoom,
                     session.center,
                     settings.move_easing.clone(),
                 ));
+
+                let move_end = next_session.start_time - 0.05;
+                keyframes.push(TransformKeyframe::new(
+                    move_end,
+                    next_session.zoom,
+                    next_session.center,
+                    settings.move_easing.clone(),
+                ));
             } else {
-                // Zoom out, then zoom in to next
+                // Zoom out to 1.0x, then next iteration will zoom in again
                 let zoom_out_start = (next_session.start_time
                     - settings.focusing_duration
                     - settings.transition_duration)
                     .max(hold_end);
 
-                // Hold at zoom level
+                // Hold at current zoom before starting zoom-out
                 keyframes.push(TransformKeyframe::new(
                     zoom_out_start,
                     session.zoom,
@@ -447,32 +478,37 @@ fn generate_zoom_keyframes(
                     settings.zoom_out_easing.clone(),
                 ));
 
-                // Zoom out
+                // Zoom out to full screen
                 let zoom_out_end = zoom_out_start + settings.transition_duration;
                 keyframes.push(TransformKeyframe::new(
                     zoom_out_end,
                     settings.min_zoom,
                     NormalizedPoint::CENTER,
-                    settings.zoom_in_easing.clone(),
+                    settings.zoom_out_easing.clone(),
                 ));
             }
         } else {
-            // Final session: zoom out before video ends
-            let zoom_out_start = (total_duration - settings.transition_duration - 0.1)
+            // Final session: zoom out to full screen before video ends
+            let zoom_out_end = (total_duration - 0.1).max(0.0);
+            let zoom_out_start = (zoom_out_end - settings.transition_duration)
                 .max(hold_end);
 
-            keyframes.push(TransformKeyframe::new(
-                zoom_out_start,
-                session.zoom,
-                session.center,
-                settings.zoom_out_easing.clone(),
-            ));
+            // Hold at current zoom
+            if zoom_out_start > session.end_time + 0.05 {
+                keyframes.push(TransformKeyframe::new(
+                    zoom_out_start,
+                    session.zoom,
+                    session.center,
+                    settings.zoom_out_easing.clone(),
+                ));
+            }
 
+            // Zoom out to full screen
             keyframes.push(TransformKeyframe::new(
-                total_duration - 0.1,
+                zoom_out_end,
                 settings.min_zoom,
                 NormalizedPoint::CENTER,
-                EasingCurve::Linear,
+                settings.zoom_out_easing.clone(),
             ));
         }
 
@@ -797,14 +833,14 @@ mod tests {
             start_time: 0.0,
             end_time: 1.0,
             activities: Vec::new(),
-            work_area: (0.4, 0.4, 0.1, 0.1),
-            center: NormalizedPoint::new(0.45, 0.45),
+            work_area: (0.4, 0.4, 0.35, 0.35),
+            center: NormalizedPoint::new(0.575, 0.575),
             zoom: 1.0,
         };
         let settings = SmartZoomSettings::default();
         calculate_session_zoom(&mut session, &settings);
-        // coverage 0.4 / area 0.1 = 4.0
-        assert!((session.zoom - 4.0).abs() < 1e-10);
+        // coverage 0.7 / area 0.35 = 2.0
+        assert!((session.zoom - 2.0).abs() < 1e-10);
     }
 
     #[test]

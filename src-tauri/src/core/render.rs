@@ -96,48 +96,6 @@ impl FrameBuffer {
         ]
     }
 
-    /// Bilinear sample at fractional (fx, fy) coordinates in pixel space
-    fn sample_bilinear(&self, fx: f64, fy: f64) -> [u8; 4] {
-        let x0 = fx.floor() as i64;
-        let y0 = fy.floor() as i64;
-        let x1 = x0 + 1;
-        let y1 = y0 + 1;
-        let tx = (fx - x0 as f64) as f32;
-        let ty = (fy - y0 as f64) as f32;
-
-        let clamp_x = |x: i64| x.clamp(0, self.width as i64 - 1) as u32;
-        let clamp_y = |y: i64| y.clamp(0, self.height as i64 - 1) as u32;
-
-        let p00 = self.get_pixel(clamp_x(x0), clamp_y(y0));
-        let p10 = self.get_pixel(clamp_x(x1), clamp_y(y0));
-        let p01 = self.get_pixel(clamp_x(x0), clamp_y(y1));
-        let p11 = self.get_pixel(clamp_x(x1), clamp_y(y1));
-
-        let lerp = |a: u8, b: u8, t: f32| -> u8 {
-            (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
-        };
-
-        let top = [
-            lerp(p00[0], p10[0], tx),
-            lerp(p00[1], p10[1], tx),
-            lerp(p00[2], p10[2], tx),
-            lerp(p00[3], p10[3], tx),
-        ];
-        let bot = [
-            lerp(p01[0], p11[0], tx),
-            lerp(p01[1], p11[1], tx),
-            lerp(p01[2], p11[2], tx),
-            lerp(p01[3], p11[3], tx),
-        ];
-
-        [
-            lerp(top[0], bot[0], ty),
-            lerp(top[1], bot[1], ty),
-            lerp(top[2], bot[2], ty),
-            lerp(top[3], bot[3], ty),
-        ]
-    }
-
     /// Convert to VideoFrame by moving data (avoids ~20MB clone per frame)
     fn into_video_frame(self, pts: f64) -> VideoFrame {
         VideoFrame {
@@ -332,8 +290,8 @@ impl SoftwareRenderer {
         }
     }
 
-    /// Apply transform (crop/zoom/pan) using bilinear resampling.
-    /// For identity transforms (no zoom, same size), use apply_transform_cow to avoid cloning.
+    /// Apply transform (crop/zoom/pan) using nearest-neighbor resampling.
+    /// Nearest-neighbor is ~4x faster than bilinear and indistinguishable at high zoom.
     fn apply_transform(&self, source: &FrameBuffer, transform: &TransformState) -> FrameBuffer {
         let out_w = self.ctx.output_size.width as u32;
         let out_h = self.ctx.output_size.height as u32;
@@ -343,38 +301,10 @@ impl SoftwareRenderer {
             return source.clone();
         }
 
-        // Near-center with minimal zoom: use nearest-neighbor (much faster than bilinear)
-        if transform.zoom < 1.5 {
-            return self.apply_transform_nearest(source, transform, out_w, out_h);
-        }
-
-        let mut output = FrameBuffer::new(out_w, out_h);
-
-        // Calculate crop rectangle in source pixel space
-        let src_w = source.width as f64;
-        let src_h = source.height as f64;
-
-        let crop_w = src_w / transform.zoom;
-        let crop_h = src_h / transform.zoom;
-        let crop_x = transform.center.x * src_w - crop_w / 2.0;
-        let crop_y = transform.center.y * src_h - crop_h / 2.0;
-
-        // Map each output pixel back to source
-        for oy in 0..out_h {
-            for ox in 0..out_w {
-                let sx = crop_x + (ox as f64 / out_w as f64) * crop_w;
-                let sy = crop_y + (oy as f64 / out_h as f64) * crop_h;
-
-                let pixel = source.sample_bilinear(sx, sy);
-                output.set_pixel(ox, oy, pixel);
-            }
-        }
-
-        output
+        self.apply_transform_nearest(source, transform, out_w, out_h)
     }
 
-    /// Fast nearest-neighbor transform for low zoom levels (< 1.5x).
-    /// ~4x faster than bilinear — no interpolation, just pixel lookup.
+    /// Fast nearest-neighbor transform — direct byte copies, no bounds checks per pixel.
     fn apply_transform_nearest(
         &self,
         source: &FrameBuffer,
@@ -393,13 +323,30 @@ impl SoftwareRenderer {
         let inv_out_w = crop_w / out_w as f64;
         let inv_out_h = crop_h / out_h as f64;
 
+        let src_stride = source.stride as usize;
+        let dst_stride = output.stride as usize;
+        let src_max_x = source.width as i64 - 1;
+        let src_max_y = source.height as i64 - 1;
+
+        let src_data = &source.data;
+        let dst_data = &mut output.data;
+
         for oy in 0..out_h {
             let sy = (crop_y + oy as f64 * inv_out_h).round() as i64;
-            let sy = sy.clamp(0, source.height as i64 - 1) as u32;
+            let sy = sy.clamp(0, src_max_y) as usize;
+            let src_row = sy * src_stride;
+            let dst_row = oy as usize * dst_stride;
+
             for ox in 0..out_w {
                 let sx = (crop_x + ox as f64 * inv_out_w).round() as i64;
-                let sx = sx.clamp(0, source.width as i64 - 1) as u32;
-                output.set_pixel(ox, oy, source.get_pixel(sx, sy));
+                let sx = sx.clamp(0, src_max_x) as usize;
+                let src_off = src_row + sx * 4;
+                let dst_off = dst_row + ox as usize * 4;
+
+                dst_data[dst_off] = src_data[src_off];
+                dst_data[dst_off + 1] = src_data[src_off + 1];
+                dst_data[dst_off + 2] = src_data[src_off + 2];
+                dst_data[dst_off + 3] = src_data[src_off + 3];
             }
         }
         output
@@ -649,7 +596,9 @@ pub mod ffmpeg_source {
         video_stream_index: usize,
         decoder: ffmpeg::codec::decoder::Video,
         scaler: SendScaler,
+        /// Output width (may differ from source when target dimensions are provided)
         width: u32,
+        /// Output height (may differ from source when target dimensions are provided)
         height: u32,
         total: u64,
         fps: f64,
@@ -658,7 +607,17 @@ pub mod ffmpeg_source {
     }
 
     impl FfmpegVideoSource {
-        pub fn open(path: &std::path::Path) -> Result<Self, ExportError> {
+        /// Open a video file for decoding.
+        ///
+        /// If `target_width`/`target_height` are provided, the scaler will
+        /// downscale decoded frames to those dimensions during color conversion,
+        /// avoiding a separate full-resolution copy. This is a major speedup when
+        /// the source is larger than the output (e.g. 3440x1440 → 2580x1080).
+        pub fn open(
+            path: &std::path::Path,
+            target_width: Option<u32>,
+            target_height: Option<u32>,
+        ) -> Result<Self, ExportError> {
             ffmpeg::init().map_err(|e| ExportError::Io(
                 std::io::Error::new(std::io::ErrorKind::Other, format!("FFmpeg init: {e}"))
             ))?;
@@ -683,17 +642,27 @@ pub mod ffmpeg_source {
                     std::io::Error::new(std::io::ErrorKind::Other, format!("Open decoder: {e}"))
                 ))?;
 
-            let width = decoder.width();
-            let height = decoder.height();
+            let src_width = decoder.width();
+            let src_height = decoder.height();
             let pixel_format = decoder.format();
+
+            // Use target dimensions if provided, otherwise keep source dimensions
+            let out_width = target_width.unwrap_or(src_width);
+            let out_height = target_height.unwrap_or(src_height);
+
+            log::info!(
+                "FfmpegVideoSource: {}x{} → {}x{} ({})",
+                src_width, src_height, out_width, out_height,
+                if out_width == src_width && out_height == src_height { "no resize" } else { "downscaled" },
+            );
 
             let scaler = scaling::Context::get(
                 pixel_format,
-                width,
-                height,
+                src_width,
+                src_height,
                 ffmpeg::format::Pixel::BGRA,
-                width,
-                height,
+                out_width,
+                out_height,
                 scaling::Flags::BILINEAR,
             ).map_err(|e| ExportError::Io(
                 std::io::Error::new(std::io::ErrorKind::Other, format!("Scaler init: {e}"))
@@ -710,8 +679,8 @@ pub mod ffmpeg_source {
                 video_stream_index,
                 decoder,
                 scaler: SendScaler(scaler),
-                width,
-                height,
+                width: out_width,
+                height: out_height,
                 total,
                 fps: fps_f64,
                 dur,
@@ -813,17 +782,22 @@ pub mod ffmpeg_source {
 /// Create a video source from a file path.
 /// Returns FFmpeg source when the `ffmpeg` feature is enabled and the file exists,
 /// otherwise falls back to the stub source.
+///
+/// `target_width`/`target_height` let the decoder downscale during color conversion
+/// (e.g. 3440x1440 → 2580x1080), avoiding a separate full-resolution copy.
 pub fn create_video_source_from_file(
     path: &std::path::Path,
     fallback_width: u32,
     fallback_height: u32,
     fallback_duration: f64,
     fallback_fps: f64,
+    target_width: Option<u32>,
+    target_height: Option<u32>,
 ) -> Box<dyn VideoSource> {
     #[cfg(feature = "ffmpeg")]
     {
         if path.exists() {
-            match ffmpeg_source::FfmpegVideoSource::open(path) {
+            match ffmpeg_source::FfmpegVideoSource::open(path, target_width, target_height) {
                 Ok(src) => return Box::new(src),
                 Err(e) => {
                     log::warn!("FFmpeg source open failed, falling back to stub: {e}");
@@ -831,7 +805,7 @@ pub fn create_video_source_from_file(
             }
         }
     }
-    let _ = path; // suppress unused warning when ffmpeg feature disabled
+    let _ = (path, target_width, target_height); // suppress unused warnings when ffmpeg feature disabled
     Box::new(StubVideoSource::new(fallback_width, fallback_height, fallback_duration, fallback_fps))
 }
 
@@ -1035,23 +1009,6 @@ mod tests {
         // Fully transparent source leaves dst unchanged
         let result = FrameBuffer::composite_over([100, 100, 100, 255], [200, 200, 200, 0]);
         assert_eq!(result, [100, 100, 100, 255]);
-    }
-
-    #[test]
-    fn test_bilinear_sample_exact() {
-        let mut fb = FrameBuffer::new(4, 4);
-        fb.set_pixel(1, 1, [100, 100, 100, 255]);
-        let pixel = fb.sample_bilinear(1.0, 1.0);
-        assert_eq!(pixel, [100, 100, 100, 255]);
-    }
-
-    #[test]
-    fn test_bilinear_sample_midpoint() {
-        let mut fb = FrameBuffer::new(4, 4);
-        fb.set_pixel(0, 0, [0, 0, 0, 255]);
-        fb.set_pixel(1, 0, [200, 200, 200, 255]);
-        let pixel = fb.sample_bilinear(0.5, 0.0);
-        assert_eq!(pixel[0], 100); // midpoint
     }
 
     #[test]

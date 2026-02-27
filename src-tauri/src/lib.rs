@@ -260,12 +260,21 @@ fn start_export(app: AppHandle, state: State<AppState>) -> Result<String, String
             return;
         }
 
+        // Decode directly at output resolution to avoid processing full-res frames.
+        // The software renderer's zoom/pan operates in normalized coords, so it works
+        // correctly regardless of the source frame dimensions.
+        let render_ctx = core::render::RenderContext::from_project(&project);
+        let out_w = render_ctx.output_size.width as u32;
+        let out_h = render_ctx.output_size.height as u32;
+
         let source = create_video_source_from_file(
             &video_path,
             project.media.pixel_size.width as u32,
             project.media.pixel_size.height as u32,
             project.duration(),
             project.media.frame_rate,
+            Some(out_w),
+            Some(out_h),
         );
 
         let mouse_positions = {
@@ -712,6 +721,8 @@ fn extract_preview_frame(time: f64, state: State<AppState>) -> Result<FrameData,
             loaded.project.media.pixel_size.height as u32,
             loaded.project.duration(),
             loaded.project.media.frame_rate,
+            None, // preview uses source resolution
+            None,
         )
     } else {
         // No project loaded — use stub

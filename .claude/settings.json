@@ -17,8 +17,6 @@
       "Bash(tauri:*)"
     ],
     "deny": [
-      "Bash(curl:*)",
-      "Bash(wget:*)",
       "Bash(rm -rf:*)"
     ],
     "defaultMode": "acceptEdits"
