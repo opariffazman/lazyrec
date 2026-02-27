@@ -335,13 +335,27 @@ pub mod ffmpeg_encoder {
             let scaler = self.scaler.as_mut().unwrap();
             let output_ctx = self.output_ctx.as_mut().unwrap();
 
-            // Create BGRA input frame
+            // Create BGRA input frame — copy row-by-row to handle FFmpeg stride padding.
+            // FFmpeg aligns row strides to 32 bytes, but our FrameBuffer uses width*4.
+            // e.g. 2580px: our stride=10320, FFmpeg linesize=10336 (padded to 32).
             let mut bgra_frame = FfmpegFrame::new(
                 ffmpeg::format::Pixel::BGRA,
                 frame.width,
                 frame.height,
             );
-            bgra_frame.data_mut(0)[..frame.data.len()].copy_from_slice(&frame.data);
+            let src_stride = frame.stride as usize;
+            let dst_stride = bgra_frame.stride(0) as usize;
+            if dst_stride == src_stride {
+                bgra_frame.data_mut(0)[..frame.data.len()].copy_from_slice(&frame.data);
+            } else {
+                let dst = bgra_frame.data_mut(0);
+                for y in 0..frame.height as usize {
+                    let src_off = y * src_stride;
+                    let dst_off = y * dst_stride;
+                    dst[dst_off..dst_off + src_stride]
+                        .copy_from_slice(&frame.data[src_off..src_off + src_stride]);
+                }
+            }
 
             // Convert BGRA -> YUV420P
             let mut yuv_frame = FfmpegFrame::empty();
