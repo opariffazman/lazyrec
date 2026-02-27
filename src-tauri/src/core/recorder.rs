@@ -265,10 +265,10 @@ impl RecordingCoordinator {
         });
         self.encoder_thread = Some(encoder_handle);
 
-        // Start input monitoring
-        self.input_monitor.start_monitoring()?;
-
-        // Start screen capture — frame callback sends to channel
+        // Start screen capture FIRST — frame callback sends to channel.
+        // Starting capture before input monitoring minimizes the time offset
+        // between video frame timestamps and mouse position timestamps,
+        // preventing the cursor overlay from leading ahead of the video.
         let target = self.capture_target.clone()
             .unwrap_or(CaptureTarget::Display { display_id: 0 });
 
@@ -298,10 +298,11 @@ impl RecordingCoordinator {
                 }
             }),
         ) {
-            // Clean up input monitor if capture failed to start
-            let _ = self.input_monitor.stop_monitoring();
             return Err(e.into());
         }
+
+        // Start input monitoring AFTER capture so mouse timestamps align with video
+        self.input_monitor.start_monitoring()?;
 
         // Start timing
         self.recording_start = Some(Instant::now());

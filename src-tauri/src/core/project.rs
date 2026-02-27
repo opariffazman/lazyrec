@@ -271,7 +271,7 @@ pub struct RenderSettings {
 impl Default for RenderSettings {
     fn default() -> Self {
         Self {
-            output_resolution: OutputResolution::Fhd1080,
+            output_resolution: OutputResolution::Original,
             output_frame_rate: OutputFrameRate::Original,
             codec: VideoCodec::H264,
             quality: ExportQuality::High,

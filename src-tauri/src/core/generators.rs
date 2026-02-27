@@ -464,19 +464,22 @@ fn generate_zoom_keyframes(
                     settings.move_easing.clone(),
                 ));
             } else {
-                // Zoom out to 1.0x, then next iteration will zoom in again
+                // Zoom out to 1.0x, then next iteration will zoom in again.
+                // Constrain by session end, not hold_end (which can overshoot).
                 let zoom_out_start = (next_session.start_time
                     - settings.focusing_duration
                     - settings.transition_duration)
-                    .max(hold_end);
+                    .max(session.end_time + 0.05);
 
                 // Hold at current zoom before starting zoom-out
-                keyframes.push(TransformKeyframe::new(
-                    zoom_out_start,
-                    session.zoom,
-                    session.center,
-                    settings.zoom_out_easing.clone(),
-                ));
+                if zoom_out_start > session.end_time + 0.1 {
+                    keyframes.push(TransformKeyframe::new(
+                        zoom_out_start,
+                        session.zoom,
+                        session.center,
+                        settings.zoom_out_easing.clone(),
+                    ));
+                }
 
                 // Zoom out to full screen
                 let zoom_out_end = zoom_out_start + settings.transition_duration;
@@ -488,13 +491,18 @@ fn generate_zoom_keyframes(
                 ));
             }
         } else {
-            // Final session: zoom out to full screen before video ends
+            // Final session: zoom out to full screen before video ends.
+            // Don't constrain by hold_end — it can exceed total_duration
+            // for short recordings, causing the hold keyframe to sort AFTER
+            // the zoom-out and leave the video stuck zoomed in.
             let zoom_out_end = (total_duration - 0.1).max(0.0);
             let zoom_out_start = (zoom_out_end - settings.transition_duration)
-                .max(hold_end);
+                .max(session.end_time + 0.05);
 
-            // Hold at current zoom
-            if zoom_out_start > session.end_time + 0.05 {
+            // Hold at current zoom (only if there's room before zoom-out)
+            if zoom_out_start > session.end_time + 0.1
+                && zoom_out_start < zoom_out_end
+            {
                 keyframes.push(TransformKeyframe::new(
                     zoom_out_start,
                     session.zoom,
@@ -503,7 +511,7 @@ fn generate_zoom_keyframes(
                 ));
             }
 
-            // Zoom out to full screen
+            // Always zoom out to full screen at the end
             keyframes.push(TransformKeyframe::new(
                 zoom_out_end,
                 settings.min_zoom,
